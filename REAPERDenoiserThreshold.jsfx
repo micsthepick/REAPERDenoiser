@@ -18,25 +18,20 @@ slider1:0<0,1,1{Denoise Input, Record Noise Sample}>Noise Collection Mode
 // shouldn't really do anything to the input audio.)
 slider2:1<0.0,10.0,0.001>Noise Scale
 
-// This defines a slider that controls the level of the noise (dB)
-// in theory, it only needs to be adjusted if a previous noise
-// profile was made with the same setup, but the level changed
-slider3:0<-80,20,0.1>Noise adjust (dB)
-
 // This defines a slider that specifies the max level (in dB)
 // of the noise that is recorded
-slider4:-120<-120,0,0.1>Noise detect min (dB)
+slider3:-120<-120,0,0.1>Noise detect min (dB)
 
 // This defines a slider that specifies the minimum level (in dB)
 // that a noise is recorded with (useful to filter out silence)
-slider5:0<-120,0,0.1>Noise detext max (dB)
+slider4:0<-120,0,0.1>Noise detext max (dB)
 
 // This defines a slider to mix between no noise reduction or
 // any amount of noise reduction.
-slider6:100<0,100,0.5>Wet/dry mix (0 = all dry, 100 = all wet)
+slider5:100<0,100,0.5>Wet/dry mix (0 = all dry, 100 = all wet)
 
 // checkbox? to enable/disable difference monitoring
-slider7:0<0,1,1{Off, On}>Difference monitoring
+slider6:0<0,1,1{Off, On}>Difference monitoring
 
 // Here we can label our input and output pins. This also tells REAPER how many
 // channels we can handle. In this case, the plugin is stereo (a monophonic
@@ -49,6 +44,11 @@ out_pin:Denoised Audio 2
 
 
 @init
+// convert decibel measurement to decimal value
+function dBtoDec(value)
+(
+  10^(value/20);
+);
 // On initialization, initialize all of our variables.
 
 // The FFT size will always be constant.
@@ -95,12 +95,6 @@ pdc_top_ch=2;
 
 
 @slider
-// convert decibel measurement to decimal value
-function dBtoDec(value)
-(
-    10^(value/20);
-);
-
 // A simple function to zero out the noise buffers when switching mode to "Record Noise Sample"
 // previousMode should default to 0 on first initialization, but setting it to 0 in @init will cause
 // this code to get run again, and the noise profile lost even when switching to "Denoise Input"
@@ -112,9 +106,8 @@ slider1 > 0.5 ? (
     previousMode = 1;
   )
 ) : previousMode = 0;
-noiseAdjust = dBtoDec(slider3);
-noiseLow = dBtoDec(slider4);
-noiseHigh = dBtoDec(slider5);
+noiseLow = dBtoDec(slider3);
+noiseHigh = dBtoDec(slider4);
 
 @sample
 // We'll write a function to denoise a single channel, and then we'll call this
@@ -156,14 +149,14 @@ local(sample tilePos1 tilePos2 windowTile1 windowTile2 index bandIndex
   
   // For the output audio, read from the two tiles and sum their results.
   wet = tileO1[tilePos1] + tileO2[tilePos2];
-  slider7 == 0 ?
+  slider6 == 0 ?
   (
-    //spl(channel) = wet * slider6/100 + dry * (100-slider6)/100;
-    wetfrac = slider6/100;
-    dryfrac = (100-slider6)/100;
+    //spl(channel) = wet * slider5/100 + dry * (100-slider5)/100;
+    wetfrac = slider5/100;
+    dryfrac = (100-slider5)/100;
   ) : (
     dryfrac = 1;
-    wetfrac = - slider6/100;
+    wetfrac = - slider5/100;
   );
   
   spl(channel) = wet * wetfrac + dry * dryfrac;
@@ -220,7 +213,6 @@ local(sample tilePos1 tilePos2 windowTile1 windowTile2 index bandIndex
     (slider1 > 0.5 && runningSum >= noiseLow
       && runningSum <= noiseHigh) ? 
     (
-      COUNTTHIS += 1;
       // for each band, compare the norm of the noise in this frame.
       // If it is greater than what's already there for this band, then copy
       // it into the noiseBuffer
@@ -254,7 +246,7 @@ local(sample tilePos1 tilePos2 windowTile1 windowTile2 index bandIndex
       // Compute |Y(f)|^2 = real(Y(f))^2 + imaginary(Y(f))^2
       yNorm = sqr(fftBuffer[2 * bandIndex + 0]) + sqr(fftBuffer[2 * bandIndex + 1]);
       // The same for the noise component:
-      nNorm = noiseBuffer[bandIndex];// * noiseAdjust;
+      nNorm = noiseBuffer[bandIndex];
       
       attenuationFactor = yNorm / (SIZE * (yNorm + kSquared * nNorm));
       
