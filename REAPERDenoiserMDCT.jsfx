@@ -134,9 +134,7 @@ function denoiseChannel(channel tileI1 tileI2 tileO1 tileO2 noiseBuffer samplesC
       loop(SIZE/2,
         squareMagnitudeNew = sqr(tileI1[index]);
         squareMagnitudeOld = noiseBuffer[index];
-        squareMagnitudeNew > squareMagnitudeOld ? (
-          noiseBuffer[index] = squareMagnitudeNew;
-        );
+        noiseBuffer[index] = (squareMagnitudeNew + 3 * squareMagnitudeOld) / 4;
         index += 1;
       );
     );
