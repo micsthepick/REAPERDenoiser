@@ -20,11 +20,11 @@ slider2:1<0.0,10.0,0.0001>Noise Scale
 
 // This defines a slider that specifies the max level (in dB)
 // of the noise that is recorded
-slider3:-120<-120,0,0.1>Noise detect min (dB)
+slider3:-100<-120,0,0.1>Noise detect min (dB)
 
 // This defines a slider that specifies the minimum level (in dB)
 // that a noise is recorded with (useful to filter out silence)
-slider4:0<-120,0,0.1>Noise detext max (dB)
+slider4:-50<-120,0,0.1>Noise detext max (dB)
 
 // This defines a slider to mix between no noise reduction or
 // any amount of noise reduction.
@@ -105,6 +105,15 @@ slider1 > 0.5 ? (
 ) : previousMode = 0;
 noiseLow = dBtoDec(slider3);
 noiseHigh = dBtoDec(slider4);
+slider6 == 0 ?
+  (
+    //spl(channel) = wet * slider5/100 + dry * (100-slider5)/100;
+    wetfrac = slider5/100;
+    dryfrac = (100-slider5)/100;
+  ) : (
+    dryfrac = 1;
+    wetfrac = - slider5/100;
+  );
 
 @sample
 // We'll write a function to denoise a single channel, and then we'll call this
@@ -129,8 +138,8 @@ local(sample tilePos1 tilePos2 index bandIndex
   tilePos1 = samplesCollected + SIZE/2;
   tilePos2 = samplesCollected;
   
-  // read old dry signal from input buffers
-  dry = tileI1[tilePos1] + tileI2[tilePos2];
+  // read old dry signal from input buffer
+  dry = tileI1[tilePos1];
   
   // Write into the input buffers:
   tileI1[tilePos1] = sample;
@@ -138,15 +147,6 @@ local(sample tilePos1 tilePos2 index bandIndex
   
   // For the output audio, read from the two tiles and sum their results.
   wet = tileO1[tilePos1] + tileO2[tilePos2];
-  slider6 == 0 ?
-  (
-    //spl(channel) = wet * slider5/100 + dry * (100-slider5)/100;
-    wetfrac = slider5/100;
-    dryfrac = (100-slider5)/100;
-  ) : (
-    dryfrac = 1;
-    wetfrac = - slider5/100;
-  );
   
   spl(channel) = wet * wetfrac + dry * dryfrac;
   
@@ -212,16 +212,19 @@ local(sample tilePos1 tilePos2 index bandIndex
     loop(SIZE/2,
       // Find the blurred attenuation factor for this coefficient
       // find out how much to blur by in this 
-      blurAmount = slider7*log(1+bandIndex);
-      attenuationFactor = blurringBuffer[bandIndex];
+      blurAmount = (slider7*log(1+bandIndex))~0;
+      attenuationFactor = 0;//blurringBuffer[bandIndex];
+      divisor = 1;
       
-      indexOffset = 1;
-      loop(blurAmount,
-        attenuationFactor += blurringBuffer[bandIndex+indexOffset];
-        attenuationFactor += blurringBuffer[bandIndex-indexOffset];
+      index = max(0, bandIndex-indexOffset);
+      maxIndex = min(SIZE/2-1, bandIndex+indexOffset);
+      elems = maxIndex - index + 1;
+      loop(elems,
+        attenuationFactor += blurringBuffer[index];
+        index += 1;
       );
       
-      tileO1[bandIndex] *= attenuationFactor;
+      tileO1[bandIndex] *= attenuationFactor / elems;
       
       bandIndex += 1;
     );
