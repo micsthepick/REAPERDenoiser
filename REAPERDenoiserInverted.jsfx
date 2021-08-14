@@ -1,0 +1,342 @@
+desc:Ratio Denoiser (github.com/nbickford/REAPERDenoiser)
+// That's the description of the plugin. This is how it'll show up in the effect
+// search dialog, as well as the text at the start of its user interface. We use
+// it as the first line of the script per the JSFX documentation's
+// recommendation (https://www.reaper.fm/sdk/js/js.php#js_file)
+
+// Define our user interface.
+// Our FFT size will always be the same, so we only need controls for
+// the noise collection mode and the noise scale (k).
+
+// This defines a combo box that allows the user to select "Denoise Input" or
+// "Record Noise Sample". The default value is 0 (Denoise Input). The maximum
+// value is 1 (Record Noise Sample), and it increases in steps of 1.
+slider1:0<0,1,1{Denoise Input, Record Noise Sample}>Noise Collection Mode
+
+// This defines a slider that can be varied between 0.0 and 10.0 in steps of
+// 0.001, with default value 1.0. (If slider2 is equal to 0.0, this plugin
+// shouldn't really do anything to the input audio.)
+slider2:1<0.0,10.0,0.001>Noise Scale
+
+// This defines a slider that controls the level of the noise (dB)
+// in theory, it only needs to be adjusted if a previous noise
+// profile was made with the same setup, but the level changed
+slider3:0<-80,20,0.1>Noise adjust (dB)
+
+// This defines a slider that specifies the max level (in dB)
+// of the noise that is recorded
+slider4:-120<-120,0,0.1>Noise detect min (dB)
+
+// This defines a slider that specifies the minimum level (in dB)
+// that a noise is recorded with (useful to filter out silence)
+slider5:0<-120,0,0.1>Noise detext max (dB)
+
+// This defines a slider to mix between no noise reduction or
+// any amount of noise reduction.
+slider6:100<0,100,0.5>Wet/dry mix (0 = all dry, 100 = all wet)
+
+// checkbox? to enable/disable difference monitoring
+slider7:1<0,1,1{On, Off}>Difference monitoring
+
+// Here we can label our input and output pins. This also tells REAPER how many
+// channels we can handle. In this case, the plugin is stereo (a monophonic
+// plugin would be simpler, but I almost always use this to denoise stereo
+// audio), so we define two input and output pins.
+in_pin:Noisy Audio 1
+in_pin:Noisy Audio 2
+out_pin:Denoised Audio 1
+out_pin:Denoised Audio 2
+
+
+@init
+// On initialization, initialize all of our variables.
+
+// The FFT size will always be constant.
+SIZE = 8192;
+
+// We don't do any allocation in this plugin, since we know we start out with 8M
+// words of memory. So all we need to do is construct some pointers to memory,
+// where we'll store our data.
+// Since we have two channels, we'll have 10 buffers of length SIZE.
+fftBuffer = 0; // the fft takes 2*SIZE entries (complex samples)
+// put in position 0 to avoid alignment issues (crossing 65536 boundary)
+bufferI1L = 2*SIZE;
+bufferI2L = 3*SIZE;
+bufferO1L = 4*SIZE;
+bufferO2L = 5*SIZE; // And so on
+noiseBufferL = 6*SIZE; // The FFT of the noise sample uses 2*SIZE memory
+// but taking the norm reduces this to 1*SIZE, and saves time when processing effect
+bufferI1R = 7*SIZE; // Right channels
+bufferI2R = 8*SIZE;
+bufferO1R = 9*SIZE;
+bufferO2R = 10*SIZE;
+noiseBufferR = 11*SIZE;
+// We also use a temporary buffer of complex numbers in order to store our
+// audio signals using complex numbers. REAPER's implementation of JSFX supports
+// fft_real, which allows us to avoid this, as of this writing, but ReaPlugs
+// doesn't have this yet.
+attenuationBuffer = 12*SIZE;
+// temporarily store attenuation values to allow spectral smoothing
+freembuf(13*SIZE + 1);
+
+
+// samplesCollected will be our position in the last of the two tiles.
+// As such, it'll range from 0 to (SIZE/2) - 1.
+// (In other words, our position in the first tile will be
+// samplesCollected + SIZE/2, and our position in the second tile will be
+// samplesCollected) 
+samplesCollected = 0;
+
+// Finally, the algorithm we use outputs modified audio SIZE samples after we
+// input it. If we tell REAPER that the plugin has a delay of SIZE samples,
+// REAPER can automatically compensate for this and make it appear as if there's
+// no delay at all.
+pdc_delay = SIZE; 
+pdc_bot_ch=0;
+pdc_top_ch=2;
+
+
+@slider
+// convert decibel measurement to decimal value
+function dBtoDec(value)
+(
+  10^(value/20);
+);
+
+// A simple function to zero out the noise buffers when switching mode to "Record Noise Sample"
+// previousMode should default to 0 on first initialization, but setting it to 0 in @init will cause
+// this code to get run again, and the noise profile lost even when switching to "Denoise Input"
+slider1 > 0.5 ? (
+  previousMode < 0.5 ? (
+    bandIndex = 0;
+    memset(noiseBufferL, 0, SIZE);
+    memset(noiseBufferR, 0, SIZE);
+    previousMode = 1;
+  )
+) : previousMode = 0;
+noiseAdjust = dBtoDec(slider3);
+noiseLow = dBtoDec(slider4);
+noiseHigh = dBtoDec(slider5);
+
+@sample
+// We'll write a function to denoise a single channel, and then we'll call this
+// for each of the channels.
+// In this case, we'll pass in the channel number, the four input and output
+// tiles, and the current sample.
+// We also need to specify which variables will be local to the function (i.e.
+// which variables have local instead of global scope).
+// Note that channels are zero-indexed (so the left channel is channel 0, and
+// the right channel is channel 1).
+// Functions can return values, but this one won't return anything.
+// Swapping tiles and resetting samplesCollected will be managed by the caller.
+function denoiseChannel(channel tileI1 tileI2 tileO1 tileO2 noiseBuffer samplesCollected)
+local(sample tilePos1 tilePos2 windowTile1 windowTile2 index bandIndex
+  kSquared yNorm nNorm attenuationFactor)
+(
+  // Read out input audio and write it into the input buffer.
+  sample = spl(channel); // You can also use spl0 or spl1.
+  (channel == 0 ? runningSum0 : runningSum1) += sqr(sample);
+  
+  // Compute our positions in tile 1 and tile 2 for conciseness
+  tilePos1 = samplesCollected + SIZE/2;
+  tilePos2 = samplesCollected;
+  
+  // We'll apply each tile's envelope as we write the sample into
+  // the tile's buffer.
+  // See https://en.wikipedia.org/wiki/Window_function#Hann_and_Hamming_windows
+  windowTile1 = 1 - abs(2*tilepos1+1-SIZE)/(SIZE-1);
+  windowTile2 = 1 - abs(2*tilepos2+1-SIZE)/(SIZE-1);
+  
+  sum = windowTile1+windowTile2;
+  
+  // read old dry signal from input buffers
+  dry = tileI1[tilePos1] + tileI2[tilePos2];
+  
+  // Write into the input buffers:
+  tileI1[tilePos1] = sample * windowTile1;
+  tileI2[tilePos2] = sample * windowTile2;
+  
+  // For the output audio, read from the two tiles and sum their results.
+  wet = tileO1[tilePos1] + tileO2[tilePos2];// tileO1[tilePos1] * windowTile1 + tileO2[tilePos2] * windowTile2;
+  //wet /= windowTile1 * windowTile1 + windowTile2 * windowTile2;
+  
+  slider7 == 0 ?
+  (
+    //spl(channel) = wet * slider6/100 + dry * (100-slider6)/100;
+    // the effect is currently attenuating everything but the noise, so subtract that from the dry
+    // to do the denoising
+    wetfrac = slider6/100;
+    dryfrac = (100-slider6)/100;
+  ) : (
+    dryfrac = 1;
+    wetfrac = - slider6/100;
+  );
+  
+  spl(channel) = wet * wetfrac + dry * dryfrac;
+  
+  // When we finish a tile, samplesCollected is equal to (SIZE/2) - 1
+  // When that happens, we transform the contents of tile 1 and write them to
+  // output tile 1. Then we swap tiles 1 and 2 for both the input and output tiles.
+  // The code outside of this function will take care of setting samplesCollected
+  // back to 0.
+  samplesCollected == (SIZE/2) - 1 ? (
+    // The first thing we need to do is to copy from our tile of audio signals,
+    // tileI1, into a temporary array that stores the real and imaginary parts
+    // of SIZE complex numbers, and so has 2*SIZE words. This is necessary because
+    // JSFX's fft function operates on complex numbers; JSFX also has fft_real,
+    // but this isn't supported in ReaPlugs yet.
+    //
+    // tileI1 looks like
+    // [audio sample 0, audio sample 1, ..., audio sample SIZE - 1]
+    // and fftBuffer will look like
+    // [audio sample 0, 0, audio sample 1, 0, ..., audio sample SIZE - 1, 0]
+    // (i.e. it'll store the complex numbers (spl0 + 0i, spl1 + 0i, ...).
+    //
+    // Loop over each of the audio samples, from index = 0 to SIZE - 1.
+    index = 0;
+    loop(SIZE,
+      fftBuffer[2 * index + 0] = tileI1[index]; // Real part
+      fftBuffer[2 * index + 1] = 0.0; // Imaginary part
+      index += 1; // Next index
+    );
+    
+    // Now compute the FFT of the buffer in-place:
+    // Note that SIZE specifies the number of complex numbers.
+    fft(fftBuffer, SIZE);
+    // The different frequency bins are now stored in permuted order. We need to
+    // call fft_permute to get them in order of their frequencies.
+    // See https://www.reaper.fm/sdk/js/advfunc.php#js_advanced for more info.
+    fft_permute(fftBuffer, SIZE);
+    
+    // fftBuffer now looks like
+    // [band 0 real part, band 0 imaginary part,
+    //  band 1 real part, band 1 imaginary part,
+    //  ...
+    //  band SIZE-1 real part, band SIZE-1 imaginary part].
+    // Note that we don't get bands SIZE/2 + 1 to SIZE-1 for free - there's no
+    // real extra data there! Those bands are conjugated, reversed versions
+    // of bands 1 to SIZE/2 - 1. In other words, since we put in SIZE words of
+    // information, we get only SIZE words of information out.
+    
+    // If slider1 is greater than 0.5 (i.e. the user selected "Record Noise
+    // Sample", we store the FFTs of each of these buffers.
+    runningSum = channel == 0 ? runningSum0 : runningSum1;
+    (channel == 0 ? runningSum0 : runningSum1) = 0;
+    runningSum = sqrt(2*runningSum/SIZE);
+    (slider1 > 0.5 && runningSum >= noiseLow
+      && runningSum <= noiseHigh) ? 
+    (
+      // for each band, compare the norm of the noise in this frame.
+      // If it is greater than what's already there for this band, then copy
+      // it into the noiseBuffer
+      index = 0;
+      loop(SIZE,
+        normSquareNew = sqr(fftBuffer[2 * index + 0]) + sqr(fftBuffer[2 * index + 1]);
+        normSquareOld = noiseBuffer[index];
+        normSquareOld == 0 ?
+        (
+           noiseBuffer[index] = normSquareNew;
+        ) :
+        (
+          noiseBuffer[index] = (3 * normSquareNew 
+            + normSquareOld) / 4;
+        );
+        index += 1;
+      );
+    );
+    
+    // Apply Norbert Weiner's filtering algorithm,
+    //   X(f) = Y(f) * (|Y(f)|^2)/(|Y(f)|^2 + k^2 |N(f)|^2)
+    // sqr() computes the square of a number, and abs() computes the absolute
+    // value of a number. We also include a factor of 1/SIZE, to normalize the
+    // FFT (so that if we don't do any denoising, the input signal is equal to
+    // the output signal).
+    // because I've inverted the algorithm, I should also invert this value
+    kSquared = sqr(1/slider2); // slider2 is the Noise Scale from above.
+    
+    // Loop over each band, from bandIndex = 0 to SIZE - 1.
+    bandIndex = 0;
+    loop(SIZE,
+      // Compute |Y(f)|^2 = real(Y(f))^2 + imaginary(Y(f))^2
+      yNorm = sqr(fftBuffer[2 * bandIndex + 0]) + sqr(fftBuffer[2 * bandIndex + 1]);
+      // The same for the noise component:
+      nNorm = noiseBuffer[bandIndex];// * noiseAdjust;
+      
+      attenuationFactor = nNorm / (nNorm + kSquared * yNorm);
+      
+      attenuationBuffer[bandIndex] = attenuationFactor;
+      
+      bandIndex += 1;
+    );
+    
+    // apply spectral smoothing then attenuate
+    // loop over each band
+    bandIndex = 0;
+    loop(SIZE,
+      blurFactor = 0;// floor(log(bandIndex+10)); // 9 if bandIndex >= 8094, 2 if bandIndex <= 10
+      subBandIndex = max(0, bandIndex-blurFactor);
+      average = 0;
+      sumWeight = 0;
+      while (
+        weight = 1 / (1 + abs(subBandIndex - bandIndex));
+        sumWeight += weight;
+        average += attenuationBuffer[subBandIndex] * weight;
+        subBandIndex += 1;
+        (subBandIndex < SIZE && subBandIndex - bandIndex <= blurFactor);
+      );
+      atteunationFactor = average / sumWeight;
+      
+      fftBuffer[2 * bandIndex + 0] *= attenuationFactor / SIZE;
+      fftBuffer[2 * bandIndex + 1] *= attenuationFactor / SIZE;
+      
+      bandIndex += 1;
+    );
+        
+    // Now, undo the FFT (i.e. convert back from the frequency domain to the
+    // time domain):
+    fft_ipermute(fftBuffer, SIZE);
+    ifft(fftBuffer, SIZE);
+    
+    // Copy from the complex numbers in fftBuffer to the output tile:
+    index = 0;
+    loop(SIZE,
+      tileO1[index] = fftBuffer[2 * index + 0];
+      index += 1;
+    );
+  )
+);
+
+// Now, call denoiseChannel for each of the channels.
+denoiseChannel(0, bufferI1L, bufferI2L, bufferO1L, bufferO2L, noiseBufferL, samplesCollected);
+denoiseChannel(1, bufferI1R, bufferI2R, bufferO1R, bufferO2R, noiseBufferR, samplesCollected);
+// Go to the next sample
+samplesCollected += 1;
+samplesCollected == SIZE/2 ? (
+  samplesCollected = 0;
+  
+  // Finally, swap our tiles:
+  temp = bufferI1L;
+  bufferI1L = bufferI2L;
+  bufferI2L = temp;
+  
+  temp = bufferO1L;
+  bufferO1L = bufferO2L;
+  bufferO2L = temp;
+  
+  temp = bufferI1R;
+  bufferI1R = bufferI2R;
+  bufferI2R = temp;
+  
+  temp = bufferO1R;
+  bufferO1R = bufferO2R;
+  bufferO2R = temp;
+)
+
+@serialize
+// Sliders are serialized automatically, so all we have to serialize is the two
+// noise buffers. JSFX's serialization works in a clever way: when reading the
+// state of the plugin from a serialized version, these functions copy data into
+// noiseBufferL and noiseBufferR. But when writing out the state of the plugin,
+// they work the other way, copying data out of noiseBufferL and noiseBufferR.
+file_mem(0, noiseBufferL, SIZE);
+file_mem(0, noiseBufferR, SIZE);
