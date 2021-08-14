@@ -1,0 +1,271 @@
+desc:Ratio Denoiser (github.com/nbickford/REAPERDenoiser)
+// That's the description of the plugin. This is how it'll show up in the effect
+// search dialog, as well as the text at the start of its user interface. We use
+// it as the first line of the script per the JSFX documentation's
+// recommendation (https://www.reaper.fm/sdk/js/js.php#js_file)
+
+// Define our user interface.
+// Our MDCT size will always be the same, so we only need controls for
+// the noise collection mode and the noise scale (k).
+
+// This defines a combo box that allows the user to select "Denoise Input" or
+// "Record Noise Sample". The default value is 0 (Denoise Input). The maximum
+// value is 1 (Record Noise Sample), and it increases in steps of 1.
+slider1:0<0,1,1{Denoise Input, Record Noise Sample}>Noise Collection Mode
+
+// This defines a slider that can be varied between 0.0 and 10.0 in steps of
+// 0.001, with default value 1.0. (If slider2 is equal to 0.0, this plugin
+// shouldn't really do anything to the input audio.)
+slider2:1<0.0,10.0,0.0001>Noise Scale
+
+// This defines a slider that specifies the max level (in dB)
+// of the noise that is recorded
+slider3:-120<-120,0,0.1>Noise detect min (dB)
+
+// This defines a slider that specifies the minimum level (in dB)
+// that a noise is recorded with (useful to filter out silence)
+slider4:0<-120,0,0.1>Noise detext max (dB)
+
+// This defines a slider to mix between no noise reduction or
+// any amount of noise reduction.
+slider5:100<0,100,0.5>Wet/dry mix (0 = all dry, 100 = all wet)
+
+// checkbox? to enable/disable difference monitoring
+slider6:0<0,1,1{Off, On}>Difference monitoring
+
+// This defines a slider to determine the blurring factor
+slider7:0<0,10,0.1>Blurring factor
+
+// Here we can label our input and output pins. This also tells REAPER how many
+// channels we can handle. In this case, the plugin is stereo (a monophonic
+// plugin would be simpler, but I almost always use this to denoise stereo
+// audio), so we define two input and output pins.
+in_pin:Noisy Audio 1
+in_pin:Noisy Audio 2
+out_pin:Denoised Audio 1
+out_pin:Denoised Audio 2
+
+
+@init
+// convert decibel measurement to decimal value
+function dBtoDec(value)
+(
+  10^(value/20);
+);
+// On initialization, initialize all of our variables.
+
+// The MDCT size will always be constant.
+SIZE = 4096;
+
+// We don't do any allocation in this plugin, since we know we start out with 8M
+// words of memory. So all we need to do is construct some pointers to memory,
+// where we'll store our data.
+// Since we have two channels, we'll have 10 buffers of length SIZE.
+bufferI1L = 0; // The left input tile 1 buffer starts at memory address 0.
+bufferI2L = bufferI1L+SIZE; // The left input tile 2 buffer starts at memory address SIZE.
+bufferO1L = bufferI2L+SIZE; // The left output tile 1 buffer starts at address 2*SIZE.
+bufferO2L = bufferO1L+SIZE; // And so on
+bufferI1R = bufferO2L+SIZE; // Right channels
+bufferI2R = bufferI1R+SIZE;
+bufferO1R = bufferI2R+SIZE;
+bufferO2R = bufferO1R+SIZE;
+noiseBufferL = bufferO2R+SIZE; // IMDCT has SIZE/2 coefficients
+noiseBufferR = noiseBufferL+SIZE/2;
+// the noise buffers are assumed to be adjacent in later code
+blurringBuffer = noiseBufferR+SIZE/2;
+// tell reaper how much memory this plugin uses
+freembuf(blurringBuffer + SIZE/2);
+
+// samplesCollected will be our position in the last of the two tiles.
+// As such, it'll range from 0 to (SIZE/2) - 1.
+// (In other words, our position in the first tile will be
+// samplesCollected + SIZE/2, and our position in the second tile will be
+// samplesCollected) 
+samplesCollected = 0;
+
+// Finally, the algorithm we use outputs modified audio SIZE samples after we
+// input it. If we tell REAPER that the plugin has a delay of SIZE samples,
+// REAPER can automatically compensate for this and make it appear as if there's
+// no delay at all.
+pdc_delay = SIZE; 
+pdc_bot_ch=0;
+pdc_top_ch=2;
+
+
+@slider
+// A simple function to zero out the noise buffers when switching mode to "Record Noise Sample"
+// previousMode should default to 0 on first initialization, but setting it to 0 in @init will cause
+// this code to get run again, and the noise profile lost even when switching to "Denoise Input"
+slider1 > 0.5 ? (
+  previousMode < 0.5 ? (
+    bandIndex = 0;
+    memset(noiseBufferL, 0, SIZE); // since both buffers adjacent
+    previousMode = 1;
+  )
+) : previousMode = 0;
+noiseLow = dBtoDec(slider3);
+noiseHigh = dBtoDec(slider4);
+
+@sample
+// We'll write a function to denoise a single channel, and then we'll call this
+// for each of the channels.
+// In this case, we'll pass in the channel number, the four input and output
+// tiles, and the current sample.
+// We also need to specify which variables will be local to the function (i.e.
+// which variables have local instead of global scope).
+// Note that channels are zero-indexed (so the left channel is channel 0, and
+// the right channel is channel 1).
+// Functions can return values, but this one won't return anything.
+// Swapping tiles and resetting samplesCollected will be managed by the caller.
+function denoiseChannel(channel tileI1 tileI2 tileO1 tileO2 noiseBuffer samplesCollected)
+local(sample tilePos1 tilePos2 index bandIndex
+  kSquared yNorm nNorm attenuationFactor)
+(
+  // Read out input audio and write it into the input buffer.
+  sample = spl(channel); // You can also use spl0 or spl1.
+  (channel == 0 ? runningSum0 : runningSum1) += sample * sample;
+  
+  // Compute our positions in tile 1 and tile 2 for conciseness
+  tilePos1 = samplesCollected + SIZE/2;
+  tilePos2 = samplesCollected;
+  
+  // read old dry signal from input buffers
+  dry = tileI1[tilePos1] + tileI2[tilePos2];
+  
+  // Write into the input buffers:
+  tileI1[tilePos1] = sample;
+  tileI2[tilePos2] = sample;
+  
+  // For the output audio, read from the two tiles and sum their results.
+  wet = tileO1[tilePos1] + tileO2[tilePos2];
+  slider6 == 0 ?
+  (
+    dryfrac = 1;
+    wetfrac = - slider5/50;
+  ) : (
+    wetfrac = slider5/50;
+    dryfrac = (100-slider5)/100;
+  );
+  
+  spl(channel) = wet * wetfrac + dry * dryfrac;
+  
+  // When we finish a tile, samplesCollected is equal to (SIZE/2) - 1
+  // When that happens, we transform the contents of tile 1 and write them to
+  // output tile 1. Then we swap tiles 1 and 2 for both the input and output tiles.
+  // The code outside of this function will take care of setting samplesCollected
+  // back to 0.
+  samplesCollected == (SIZE/2) - 1 ? (
+    // The first thing we need to do is to copy from our tile of audio signals,
+    // tileI1, into the output buffer tileO1
+    memcpy(tileO1, tileI1, SIZE);
+    
+    // Now compute the MDCT of the buffer in-place:
+    mdct(tileO1, SIZE);
+    
+    // tileO1 now has the frequency band coefficients in the first half, in increasing order, followed by zeroes
+    
+    // If slider1 is greater than 0.5 (i.e. the user selected "Record Noise
+    // Sample", we store the noise profile (MDCT) of each of these buffers.
+  // but only if the noise level is in the apppropriate range
+    runningSum = channel == 0 ? runningSum0 : runningSum1;
+    (channel == 0 ? runningSum0 : runningSum1) = 0;
+    runningSum = sqrt(2*runningSum/SIZE);
+    (slider1 > 0.5 && runningSum >= noiseLow
+      && runningSum <= noiseHigh) ? 
+    (
+      // for each band, compare the norm of the noise in this frame.
+      // If it is greater than what's already there for this band, then copy
+      // it into the noiseBuffer
+      index = 0;
+      loop(SIZE/2,
+        squareMagnitudeNew = sqr(tileO1[index]);
+        squareMagnitudeOld = noiseBuffer[index];
+        noiseBuffer[index] = (squareMagnitudeNew + 3 * squareMagnitudeOld) / 4;
+        index += 1;
+      );
+    );
+    
+    // Apply Norbert Weiner's filtering algorithm,
+    //   X(f) = Y(f) * (|Y(f)|^2)/(|Y(f)|^2 + k^2 |N(f)|^2)
+    // sqr() computes the square of a number, and abs() computes the absolute
+    // value of a number.
+    kSquared = sqr(slider2); // slider2 is the Noise Scale from above.
+    
+    // Loop over each band, from bandIndex = 0 to SIZE - 1.
+    bandIndex = 0;
+    loop(SIZE/2,
+      // Compute |Y(f)|^2 = Y(f)^2
+      yNorm = sqr(tileO1[bandIndex]);
+      // The same for the noise component:
+      nNorm = noiseBuffer[bandIndex];
+      
+      attenuationFactor = 1 - (yNorm / (yNorm + ksquared*nNorm));
+      
+      blurringBuffer[bandIndex] = attenuationFactor;
+      
+      bandIndex += 1;
+    );
+        
+    // Loop over each band, from bandIndex = 0 to SIZE - 1.
+    bandIndex = 0;
+    loop(SIZE/2,
+      // Find the blurred attenuation factor for this coefficient
+      // find out how much to blur by in this 
+      blurAmount = slider7*log(1+bandIndex);
+      attenuationFactor = blurringBuffer[bandIndex];
+      
+      index = max(0, bandIndex-blurAmount);
+      upperIndex = min(SIZE/2 - 1, bandIndex+blurAmount);
+      n = upperIndex - index;
+      
+      loop(n,
+        attenuationFactor += blurringBuffer[index];
+        index += 1;
+      );
+      
+      tileO1[bandIndex] *= attenuationFactor / n;
+      
+      bandIndex += 1;
+    );
+    
+    // Now, undo the MDCT (i.e. convert back from the frequency domain to the
+    // time domain):
+    imdct(tileO1, SIZE);
+  )
+);
+
+// Now, call denoiseChannel for each of the channels.
+denoiseChannel(0, bufferI1L, bufferI2L, bufferO1L, bufferO2L, noiseBufferL, samplesCollected);
+denoiseChannel(1, bufferI1R, bufferI2R, bufferO1R, bufferO2R, noiseBufferR, samplesCollected);
+// Go to the next sample
+samplesCollected += 1;
+samplesCollected == SIZE/2 ? (
+  samplesCollected = 0;
+  
+  // Finally, swap our tiles:
+  temp = bufferI1L;
+  bufferI1L = bufferI2L;
+  bufferI2L = temp;
+  
+  temp = bufferO1L;
+  bufferO1L = bufferO2L;
+  bufferO2L = temp;
+  
+  temp = bufferI1R;
+  bufferI1R = bufferI2R;
+  bufferI2R = temp;
+  
+  temp = bufferO1R;
+  bufferO1R = bufferO2R;
+  bufferO2R = temp;
+)
+
+@serialize
+// Sliders are serialized automatically, so all we have to serialize is the two
+// noise buffers. JSFX's serialization works in a clever way: when reading the
+// state of the plugin from a serialized version, these functions copy data into
+// noiseBufferL and noiseBufferR. But when writing out the state of the plugin,
+// they work the other way, copying data out of noiseBufferL and noiseBufferR.
+file_mem(0, noiseBufferL, SIZE);
+// just specify the location of noiseBufferL, since both buffers are adjcacent
+// (mdct has SIZE/2 coefficients)
