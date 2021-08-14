@@ -140,11 +140,11 @@ local(sample tilePos1 tilePos2 index bandIndex
   wet = tileO1[tilePos1] + tileO2[tilePos2];
   slider6 == 0 ?
   (
-    dryfrac = 1;
-    wetfrac = - slider5/50;
+    dryfrac = 0.5;
+    wetfrac = - slider5/100;
   ) : (
-    wetfrac = slider5/50;
-    dryfrac = (100-slider5)/100;
+    wetfrac = slider5/100;
+    dryfrac = (100-slider5)/200;
   );
   
   spl(channel) = wet * wetfrac + dry * dryfrac;
@@ -214,8 +214,8 @@ local(sample tilePos1 tilePos2 index bandIndex
       blurAmount = slider7*log(1+bandIndex);
       attenuationFactor = blurringBuffer[bandIndex];
       
-      index = max(0, bandIndex-blurAmount);
-      upperIndex = min(SIZE/2 - 1, bandIndex+blurAmount);
+      index = max(1, bandIndex-blurAmount);
+      upperIndex = min(SIZE/2 - 2, bandIndex+blurAmount+1);
       n = upperIndex - index;
       
       loop(n,
