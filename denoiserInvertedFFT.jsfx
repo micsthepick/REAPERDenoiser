@@ -36,6 +36,9 @@ slider6:0<0,1,1{Off, On}>Difference monitoring
 // This defines a slider to determine the blurring factor
 slider7:0<0,10,0.1>Blurring factor
 
+// This defines a slider to determine the delay vs frequency resolution tradeoff
+slider8:1<0.03125,1,0.03125>Frequency resolution vs delay
+
 // Here we can label our input and output pins. This also tells REAPER how many
 // channels we can handle. In this case, the plugin is stereo (a monophonic
 // plugin would be simpler, but I almost always use this to denoise stereo
@@ -54,14 +57,14 @@ function dBtoDec(value)
 );
 // On initialization, initialize all of our variables.
 
-// The MDCT size will always be constant.
-SIZE = 4096;
+// The FFT size will always be constant.
+SIZE = 8192;
 
 // We don't do any allocation in this plugin, since we know we start out with 8M
 // words of memory. So all we need to do is construct some pointers to memory,
 // where we'll store our data.
-// Since we have two channels, we'll have 10 buffers of length SIZE.
-bufferI1L = 0; // The left input tile 1 buffer starts at memory address 0.
+fftBuffer = 0; // fftBuffer is 2 * SIZE in length, and starts at 0 to prevent crossing
+bufferI1L = fftBuffer + 2*SIZE; // The left input tile 1 buffer starts at memory address 0.
 bufferI2L = bufferI1L+SIZE; // The left input tile 2 buffer starts at memory address SIZE.
 bufferO1L = bufferI2L+SIZE; // The left output tile 1 buffer starts at address 2*SIZE.
 bufferO2L = bufferO1L+SIZE; // And so on
@@ -69,12 +72,13 @@ bufferI1R = bufferO2L+SIZE; // Right channels
 bufferI2R = bufferI1R+SIZE;
 bufferO1R = bufferI2R+SIZE;
 bufferO2R = bufferO1R+SIZE;
-noiseBufferL = bufferO2R+SIZE; // IMDCT has SIZE/2 coefficients
-noiseBufferR = noiseBufferL+SIZE/2;
+noiseBufferL = bufferO2R+SIZE; // The FFT of the noise sample uses 2*SIZE memory
+// but taking the norm reduces this to 1*SIZE, and saves time when processing effect
+noiseBufferR = noiseBufferL+SIZE;
 // the noise buffers are assumed to be adjacent in later code
-blurringBuffer = noiseBufferR+SIZE/2;
+blurringBuffer = noiseBufferR+SIZE;
 // tell reaper how much memory this plugin uses
-freembuf(blurringBuffer + SIZE/2);
+freembuf(blurringBuffer + SIZE);
 
 // samplesCollected will be our position in the last of the two tiles.
 // As such, it'll range from 0 to (SIZE/2) - 1.
@@ -98,13 +102,17 @@ pdc_top_ch=2;
 // this code to get run again, and the noise profile lost even when switching to "Denoise Input"
 slider1 > 0.5 ? (
   previousMode < 0.5 ? (
-    bandIndex = 0;
-    memset(noiseBufferL, 0, SIZE); // since both buffers adjacent
+    memset(noiseBufferL, 0, 2 * SIZE); // since both buffers adjacent
     previousMode = 1;
   )
 ) : previousMode = 0;
+slider8 != previousSlider8 ? (
+    previousSlider8 = slider8;
+    memset(noiseBufferL, 0, 2 * SIZE); // since both buffers adjacent
+);
 noiseLow = dBtoDec(slider3);
 noiseHigh = dBtoDec(slider4);
+FRAMESIZE = SIZE * slider8;
 
 @sample
 // We'll write a function to denoise a single channel, and then we'll call this
@@ -126,18 +134,22 @@ local(sample tilePos1 tilePos2 index bandIndex
   (channel == 0 ? runningSum0 : runningSum1) += sample * sample;
   
   // Compute our positions in tile 1 and tile 2 for conciseness
-  tilePos1 = samplesCollected + SIZE/2;
+  tilePos1 = samplesCollected + FRAMESIZE / 2;
   tilePos2 = samplesCollected;
+    
+  // calculate the MLT window for tilePos1 and tilePos2
+  window1 = sin((tilePos1+0.5)*$pi/FRAMESIZE);
+  window2 = sin((tilePos2+0.5)*$pi/FRAMESIZE);
   
   // read old dry signal from input buffers
-  dry = (tileI1[tilePos1] + tileI2[tilePos2])/2;
+  dry = tileI1[tilePos1] * window1 + tileI2[tilePos2] * window2;
   
   // Write into the input buffers:
-  tileI1[tilePos1] = sample;
-  tileI2[tilePos2] = sample;
+  tileI1[tilePos1] = sample * window1;
+  tileI2[tilePos2] = sample * window2;
   
   // For the output audio, read from the two tiles and sum their results.
-  wet = tileO1[tilePos1] + tileO2[tilePos2];
+  wet = tileO1[tilePos1] * window1 + tileO2[tilePos2] * window2;
   slider6 == 0 ?
   (
     dryfrac = 1;
@@ -154,22 +166,53 @@ local(sample tilePos1 tilePos2 index bandIndex
   // output tile 1. Then we swap tiles 1 and 2 for both the input and output tiles.
   // The code outside of this function will take care of setting samplesCollected
   // back to 0.
-  samplesCollected == (SIZE/2) - 1 ? (
+  samplesCollected == (FRAMESIZE/2) - 1 ? (
     // The first thing we need to do is to copy from our tile of audio signals,
-    // tileI1, into the output buffer tileO1
-    memcpy(tileO1, tileI1, SIZE);
+    // tileI1, into a temporary array that stores the real and imaginary parts
+    // of SIZE complex numbers, and so has 2*SIZE words. This is necessary because
+    // JSFX's fft function operates on complex numbers; JSFX also has fft_real,
+    // but this isn't supported in ReaPlugs yet.
+    //
+    // tileI1 looks like
+    // [audio sample 0, audio sample 1, ..., audio sample SIZE - 1]
+    // and fftBuffer will look like
+    // [audio sample 0, 0, audio sample 1, 0, ..., audio sample SIZE - 1, 0]
+    // (i.e. it'll store the complex numbers (spl0 + 0i, spl1 + 0i, ...).
+    //
+    // Loop over each of the audio samples, from index = 0 to SIZE - 1.
+    index = 0;
+    loop(FRAMESIZE,
+      fftBuffer[2 * index + 0] = tileI1[index] / SIZE; // Real part
+      // scaled by SIZE to account for taking FFT and IFFT
+      fftBuffer[2 * index + 1] = 0.0; // Imaginary part
+      index += 1; // Next index
+    );
+    memset(2 * FRAMESIZE, 0, (SIZE - FRAMESIZE) * 2);
     
-    // Now compute the MDCT of the buffer in-place:
-    mdct(tileO1, SIZE);
+    // Now compute the FFT of the buffer in-place:
+    // Note that SIZE specifies the number of complex numbers.
+    fft(fftBuffer, SIZE);
+    // The different frequency bins are now stored in permuted order. We need to
+    // call fft_permute to get them in order of their frequencies.
+    // See https://www.reaper.fm/sdk/js/advfunc.php#js_advanced for more info.
+    fft_permute(fftBuffer, SIZE);
     
-    // tileO1 now has the frequency band coefficients in the first half, in increasing order, followed by zeroes
+        // fftBuffer now looks like
+    // [band 0 real part, band 0 imaginary part,
+    //  band 1 real part, band 1 imaginary part,
+    //  ...
+    //  band SIZE-1 real part, band SIZE-1 imaginary part].
+    // Note that we don't get bands SIZE/2 + 1 to SIZE-1 for free - there's no
+    // real extra data there! Those bands are conjugated, reversed versions
+    // of bands 1 to SIZE/2 - 1. In other words, since we put in SIZE words of
+    // information, we get only SIZE words of information out.
     
     // If slider1 is greater than 0.5 (i.e. the user selected "Record Noise
-    // Sample", we store the noise profile (MDCT) of each of these buffers.
-  // but only if the noise level is in the apppropriate range
+    // Sample", we store the FFTs of each of these buffers.
+    // but only if the noise level is in the apppropriate range
     runningSum = channel == 0 ? runningSum0 : runningSum1;
     (channel == 0 ? runningSum0 : runningSum1) = 0;
-    runningSum = sqrt(2*runningSum/SIZE);
+    runningSum = sqrt(2*runningSum/FRAMESIZE);
     (slider1 > 0.5 && runningSum >= noiseLow
       && runningSum <= noiseHigh) ? 
     (
@@ -177,8 +220,8 @@ local(sample tilePos1 tilePos2 index bandIndex
       // If it is greater than what's already there for this band, then copy
       // it into the noiseBuffer
       index = 0;
-      loop(SIZE/2,
-        squareMagnitudeNew = sqr(tileO1[index]);
+      loop(SIZE,
+        squareMagnitudeNew = sqr(fftBuffer[2 * index]) + sqr(fftBuffer[2 * index + 1]);
         squareMagnitudeOld = noiseBuffer[index];
         noiseBuffer[index] = (squareMagnitudeNew + 15 * squareMagnitudeOld) / 16;
         index += 1;
@@ -193,9 +236,9 @@ local(sample tilePos1 tilePos2 index bandIndex
     
     // Loop over each band, from bandIndex = 0 to SIZE - 1.
     bandIndex = 0;
-    loop(SIZE/2,
-      // Compute |Y(f)|^2 = Y(f)^2
-      yNorm = sqr(tileO1[bandIndex]);
+    loop(SIZE,
+      // Compute |Y(f)|^2 = real(Y(f))^2 + imaginary(Y(f))^2
+      yNorm = sqr(fftBuffer[2 * bandIndex + 0]) + sqr(fftBuffer[2 * bandIndex + 1]);
       // The same for the noise component:
       nNorm = noiseBuffer[bandIndex];
       
@@ -205,14 +248,14 @@ local(sample tilePos1 tilePos2 index bandIndex
       
       bandIndex += 1;
     );
-    
-    // Loop over each band, from bandIndex = 0 to SIZE/2 - 1.
+        
+    // Loop over each band, from bandIndex = 0 to SIZE - 1.
     bandIndex = 0;
-    loop(SIZE/2,
+    loop(SIZE,
       // Find the blurred attenuation factor for this coefficient
       // find out how much to blur by in this 
       blurAmount = slider7*log(1+bandIndex);
-      
+            
       index = max(0, bandIndex-blurAmount | 0);
       upperIndex = min(SIZE - 1, bandIndex+blurAmount | 0);
       n = upperIndex - index + 1;
@@ -226,14 +269,23 @@ local(sample tilePos1 tilePos2 index bandIndex
       
       attenuationFactor /= n;
       
-      tileO1[bandIndex] *= attenuationFactor;
+      fftBuffer[2 * bandIndex] *= attenuationFactor;
+      fftBuffer[2 * bandIndex + 1] *= attenuationFactor;
       
       bandIndex += 1;
     );
     
-    // Now, undo the MDCT (i.e. convert back from the frequency domain to the
+    // Now, undo the FFT (i.e. convert back from the frequency domain to the
     // time domain):
-    imdct(tileO1, SIZE);
+    fft_ipermute(fftBuffer, SIZE);
+    ifft(fftBuffer, SIZE);
+
+    // Copy from the complex numbers in fftBuffer to the output tile:
+    index = 0;
+    loop(FRAMESIZE,
+      tileO1[index] = fftBuffer[2 * index + 0];
+      index += 1;
+    );
   )
 );
 
@@ -242,7 +294,7 @@ denoiseChannel(0, bufferI1L, bufferI2L, bufferO1L, bufferO2L, noiseBufferL, samp
 denoiseChannel(1, bufferI1R, bufferI2R, bufferO1R, bufferO2R, noiseBufferR, samplesCollected);
 // Go to the next sample
 samplesCollected += 1;
-samplesCollected == SIZE/2 ? (
+samplesCollected >= FRAMESIZE/2 ? (
   samplesCollected = 0;
   
   // Finally, swap our tiles:
