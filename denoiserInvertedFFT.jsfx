@@ -114,6 +114,7 @@ noiseLow = dBtoDec(slider3);
 noiseHigh = dBtoDec(slider4);
 FRAMESIZE = SIZE * slider8;
 
+
 @sample
 // We'll write a function to denoise a single channel, and then we'll call this
 // for each of the channels.
@@ -197,7 +198,7 @@ local(sample tilePos1 tilePos2 index bandIndex
     // See https://www.reaper.fm/sdk/js/advfunc.php#js_advanced for more info.
     fft_permute(fftBuffer, SIZE);
     
-        // fftBuffer now looks like
+    // fftBuffer now looks like
     // [band 0 real part, band 0 imaginary part,
     //  band 1 real part, band 1 imaginary part,
     //  ...
@@ -321,6 +322,6 @@ samplesCollected >= FRAMESIZE/2 ? (
 // state of the plugin from a serialized version, these functions copy data into
 // noiseBufferL and noiseBufferR. But when writing out the state of the plugin,
 // they work the other way, copying data out of noiseBufferL and noiseBufferR.
-file_mem(0, noiseBufferL, SIZE);
+file_mem(0, noiseBufferL, 2 * SIZE);
 // just specify the location of noiseBufferL, since both buffers are adjcacent
-// (mdct has SIZE/2 coefficients)
+// (FFT has SIZE coefficients)
