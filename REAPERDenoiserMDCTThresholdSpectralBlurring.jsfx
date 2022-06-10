@@ -167,7 +167,7 @@ local(sample tilePos1 tilePos2 index bandIndex
     
     // If slider1 is greater than 0.5 (i.e. the user selected "Record Noise
     // Sample", we store the noise profile (MDCT) of each of these buffers.
-  // but only if the noise level is in the apppropriate range
+    // but only if the noise level is in the apppropriate range
     runningSum = channel == 0 ? runningSum0 : runningSum1;
     (channel == 0 ? runningSum0 : runningSum1) = 0;
     runningSum = sqrt(2*runningSum/SIZE);
