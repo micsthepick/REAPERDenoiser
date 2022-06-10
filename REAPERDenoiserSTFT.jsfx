@@ -1,0 +1,288 @@
+// Now uses the STFT template code by geraintluff!: https://forum.cockos.com/showthread.php?t=225955
+
+desc:Ratio Denoiser (github.com/nbickford/REAPERDenoiser)
+// That's the description of the plugin. This is how it'll show up in the effect
+// search dialog, as well as the text at the start of its user interface. We use
+// it as the first line of the script per the JSFX documentation's
+// recommendation (https://www.reaper.fm/sdk/js/js.php#js_file)
+
+// Define our user interface.
+// Our fft size will always be the same, so we only need controls for
+// the noise collection mode and the noise scale (k).
+
+// This defines a combo box that allows the user to select "Denoise Input" or
+// "Record Noise Sample". The default value is 0 (Denoise Input). The maximum
+// value is 1 (Record Noise Sample), and it increases in steps of 1.
+slider1:0<0,1,1{Denoise Input, Record Noise Sample}>Noise Collection Mode
+
+// This defines a slider that can be varied between 0.0 and 10.0 in steps of
+// 0.001, with default value 1.0. (If slider2 is equal to 0.0, this plugin
+// shouldn't really do anything to the input audio.)
+slider2:k=1<0.0,10.0,0.0001>Noise Scale
+
+// This defines a slider that specifies the max level (in dB)
+// of the noise that is recorded
+slider3:-100<-120,0,0.1>Noise detect min (dB)
+
+// This defines a slider that specifies the minimum level (in dB)
+// that a noise is recorded with (useful to filter out silence)
+slider4:-50<-120,0,0.1>Noise detext max (dB)
+
+// This defines a slider to mix between no noise reduction or
+// any amount of noise reduction.
+slider5:100<0,100,0.5>Wet/dry mix (0 = all dry, 100 = all wet)
+
+// checkbox? to enable/disable difference monitoring
+slider6:0<0,1,1{Off, On}>Difference monitoring
+
+// This defines a slider to determine the blurring factor
+slider7:blur_fact=0<0,10,0.1>Blurring factor
+
+
+// Here we can label our input and output pins. This also tells REAPER how many
+// channels we can handle. In this case, the plugin is stereo (a monophonic
+// plugin would be simpler, but I almost always use this to denoise stereo
+// audio), so we define two input and output pins.
+in_pin:Noisy Audio 1
+in_pin:Noisy Audio 2
+out_pin:Denoised Audio 1
+out_pin:Denoised Audio 2
+
+
+@init
+// convert decibel measurement to decimal value
+function dBtoDec(value)
+(
+  10^(value/20);
+);
+
+function generate_stft_coeffs() local(fft_bin, left_real, left_imag, right_real, right_imag) (
+  fft_bin = 0;
+  loop(fft_size/2+1,
+    fft_bin2 = fft_bin ? (fft_size - fft_bin) : 0;
+
+    // Unfold complex spectrum into two real spectra
+    left_real = fft_buffer[2*fft_bin] + fft_buffer[2*fft_bin2];
+    left_imag = fft_buffer[2*fft_bin + 1] - fft_buffer[2*fft_bin2 + 1];
+    right_real = fft_buffer[2*fft_bin + 1] + fft_buffer[2*fft_bin2 + 1];
+    right_imag = -fft_buffer[2*fft_bin] + fft_buffer[2*fft_bin2];
+
+    // find the sum of squares for both channels
+    lss = sqr(left_real) + sqr(left_imag);
+    rss = sqr(right_real) + sqr(right_imag);
+
+
+    noise_low <= running_sum && running_sum <= noise_high && slider1 > 0.5 ? (
+      noise_buffer[2*fft_bin] = (lss + noise_buffer[2*fft_bin]) / 2;
+      noise_buffer[2*fft_bin + 1] = (rss + noise_buffer[2*fft_bin + 1]) / 2;
+    );
+    
+    // Apply Norbert Weiner's filtering algorithm,
+    //   X(f) = Y(f) * (|Y(f)|^2)/(|Y(f)|^2 + k^2 |N(f)|^2)
+    // sqr() computes the square of a number, and abs() computes the absolute
+    // value of a number.
+    // and take 1 minus the answer.
+
+    blurring_buffer[2*fft_bin] = (lss / (lss + sqr(k *noise_buffer[2*fft_bin])));
+
+    blurring_buffer[2*fft_bin + 1] = (rss / (rss + sqr(k *noise_buffer[2*fft_bin + 1])));
+
+    fft_bin += 1;
+  );
+);
+
+function process_stft_segment(fft_buffer, fft_size) local(fft_bin, left_real, left_imag, right_real, right_imag) (
+  fft_bin = 0; // FFT bin number
+  loop(fft_size/2+1,
+    fft_bin2 = fft_bin ? (fft_size - fft_bin) : 0;
+
+    // Unfold complex spectrum into two real spectra
+    left_real = fft_buffer[2*fft_bin] + fft_buffer[2*fft_bin2];
+    left_imag = fft_buffer[2*fft_bin + 1] - fft_buffer[2*fft_bin2 + 1];
+    right_real = fft_buffer[2*fft_bin + 1] + fft_buffer[2*fft_bin2 + 1];
+    right_imag = -fft_buffer[2*fft_bin] + fft_buffer[2*fft_bin2];
+
+    //////////////////////// Main STFT block
+    // The 'meat' of the algorithm, the code in this block will most resemble the code from vocalrediso.ny
+
+    // Find the blurred attenuation factor for this coefficient
+    // find out how much to blur by in this 
+    blur_amount = (blur_fact*log(1+fft_bin))~0;
+    attenuation_factor_L = 0;
+    attenuation_factor_R = 0;
+        
+    index = max(0, fft_bin-blur_amount);
+    max_index = min(fft_size/2, fft_bin+blur_amount);
+    elems = max_index - index + 1;
+    loop(elems,
+      attenuation_factor_L += blurring_buffer[2*index];
+      attenuation_factor_R += blurring_buffer[2*index + 1];
+      index += 1;
+    );
+    
+    
+    attenuation_factor_L = attenuation_factor_L / elems;
+    attenuation_factor_R = attenuation_factor_R / elems;
+
+    left_real *= blurring_buffer[2*fft_bin];
+    left_imag *= blurring_buffer[2*fft_bin];
+
+    right_real *= blurring_buffer[2*fft_bin + 1];
+    right_imag *= blurring_buffer[2*fft_bin + 1];
+
+    // Re-fold back into complex spectrum
+    fft_buffer[2*fft_bin] = (left_real - right_imag)*0.5;
+    fft_buffer[2*fft_bin + 1] = (left_imag + right_real)*0.5;
+    fft_buffer[2*fft_bin2] = (left_real + right_imag)*0.5;
+    fft_buffer[2*fft_bin2 + 1] = (-left_imag + right_real)*0.5;
+
+    fft_bin += 1;
+  );
+);
+
+function setup_stft_state(fft_size, first_time) (
+  //////////////////////// Setup block
+  // This is called when playback starts, or when the FFT size is changed
+  0;
+  ////////////////////////
+);
+
+MAX_FFT_SIZE = 32768;
+fft_size = 8192;
+
+freemem = 0;
+freemem = (fft_buffer = freemem) + MAX_FFT_SIZE*2;
+freemem = (window_buffer = freemem) + MAX_FFT_SIZE;
+freemem = (blurring_buffer = freemem) + MAX_FFT_SIZE+2;
+freemem = (noise_buffer = freemem) + MAX_FFT_SIZE+2;
+
+buffer_length = 4*MAX_FFT_SIZE;
+buffer_index = 0;
+freemem = (input_buffer = freemem) + buffer_length*2;
+freemem = (output_buffer = freemem) + buffer_length*2;
+
+function window(r) local(s, s2, gaussian_width, x) (
+  // When squared, the Hann window adds up perfectly for overlap >= 4, so it's suitable for perfect reconstruction
+  //(0.5 - 0.5*cos(r*2*$pi))/sqrt(0.375);
+  // the MLT sine window also appears to add up correctly, with sigma = sqrt(2).
+  sin(r*$pi)*sqrt(2);
+);
+
+overlap_factor = 4;
+fft_interval = fft_size/overlap_factor;
+fft_scaling_factor = 1/overlap_factor/fft_size;
+
+fft_size != prev_fft_size ? (
+  setup_stft_state(fft_size, prev_fft_size == 0);
+  prev_fft_size = fft_size;
+  // Fill window buffer
+  i = 0;
+  loop(fft_size,
+    r = (i + 0.5)/fft_size;
+    window_buffer[i] = window(r);
+    i += 1;
+  );
+);
+
+pdc_delay = fft_size;
+pdc_bot_ch = 0;
+pdc_top_ch = 2;
+
+freembuf(freemem);
+
+
+@sample
+
+running_sum += sqr(spl0) + sqr(spl1);
+
+old_L = input_buffer[buffer_index*2];
+old_R = input_buffer[buffer_index*2 + 1];
+
+input_buffer[buffer_index*2] = spl0;
+input_buffer[buffer_index*2 + 1] = spl1;
+
+fft_counter += 1;
+fft_counter >= fft_interval ? (
+  fft_counter = 0;
+  
+  running_sum = sqrt(running_sum / 2 / fft_interval);
+
+  // Copy input to buffer
+  bi = buffer_index - fft_size + 1;
+  i = 0;
+  loop(fft_size,
+    i2 = bi + i;
+    i2 < 0 ? i2 += buffer_length;
+
+    fft_buffer[2*i] = input_buffer[2*i2]*window_buffer[i];
+    fft_buffer[2*i + 1] = input_buffer[2*i2 + 1]*window_buffer[i];
+
+    i += 1;
+  );
+
+  // Process buffer
+  fft(fft_buffer, fft_size);
+  fft_permute(fft_buffer, fft_size);
+
+  generate_stft_coeffs();
+
+  process_stft_segment(fft_buffer, fft_size);
+
+  fft_ipermute(fft_buffer, fft_size);
+  ifft(fft_buffer, fft_size);
+
+  // Add to output
+  bi = buffer_index - fft_size + 1;
+  i = 0;
+  loop(fft_size,
+    i2 = bi + i;
+    (i2 < 0) ? i2 += buffer_length;
+
+    output_buffer[2*i2] += fft_buffer[2*i]*fft_scaling_factor*window_buffer[i];
+    output_buffer[2*i2 + 1] += fft_buffer[2*i + 1]*fft_scaling_factor*window_buffer[i];
+
+    i += 1;
+  );
+
+  running_sum = 0;
+);
+
+output_index = buffer_index - fft_size;
+output_index < 0 ? output_index += buffer_length;
+spl0 = output_buffer[output_index*2];
+spl1 = output_buffer[output_index*2 + 1];
+output_buffer[output_index*2] = 0; // clear the sample we just read
+output_buffer[output_index*2 + 1] = 0;
+
+buffer_index = (buffer_index + 1)%buffer_length;
+
+
+@slider
+// A simple function to zero out the noise buffers when switching mode to "Record Noise Sample"
+// previous_mode should default to 0 on first initialization, but setting it to 0 in @init will cause
+// this code to get run again, and the noise profile lost even when switching to "Denoise Input"
+slider1 > 0.5 ? (
+  previous_mode < 0.5 ? (
+    memset(noise_buffer, 0, fft_size+2); // since both buffers adjacent
+    previous_mode = 1;
+  )
+) : previous_mode = 0;
+noise_low = dBtoDec(slider3);
+noise_high = dBtoDec(slider4);
+slider6 == 0 ?
+(
+  wet_frac = slider5/100;
+  dry_frac = (100-slider5)/100;
+) : (
+  dry_frac = 1;
+  wet_frac = - slider5/100;
+);
+
+
+@serialize
+// Sliders are serialized automatically, so all we have to serialize is the two
+// noise buffers. JSFX's serialization works in a clever way: when reading the
+// state of the plugin from a serialized version, these functions copy data into
+// noise_bufferL and noise_bufferR. But when writing out the state of the plugin,
+// they work the other way, copying data out of noise_bufferL and noise_bufferR.
+file_mem(0, noise_buffer, fft_size+2);
