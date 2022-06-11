@@ -77,15 +77,18 @@ function generate_stft_coeffs() local(fft_bin, left_real, left_imag, right_real,
       noise_buffer[2*fft_bin + 1] = (rss + noise_buffer[2*fft_bin + 1]) / 2;
     );
     
+    lnss = noise_buffer[2*fft_bin];
+    rnss = noise_buffer[2*fft_bin + 1];
+    
     // Apply Norbert Weiner's filtering algorithm,
     //   X(f) = Y(f) * (|Y(f)|^2)/(|Y(f)|^2 + k^2 |N(f)|^2)
     // sqr() computes the square of a number, and abs() computes the absolute
     // value of a number.
     // and take 1 minus the answer.
 
-    blurring_buffer[2*fft_bin] = (lss / (lss + sqr(k *noise_buffer[2*fft_bin])));
+    blurring_buffer[2*fft_bin] = (lss / (lss + sqr(k)*lnss));
 
-    blurring_buffer[2*fft_bin + 1] = (rss / (rss + sqr(k *noise_buffer[2*fft_bin + 1])));
+    blurring_buffer[2*fft_bin + 1] = (rss / (rss + sqr(k)*rnss));
 
     fft_bin += 1;
   );
@@ -124,11 +127,11 @@ function process_stft_segment(fft_buffer, fft_size) local(fft_bin, left_real, le
     attenuation_factor_L = attenuation_factor_L / elems;
     attenuation_factor_R = attenuation_factor_R / elems;
 
-    left_real *= blurring_buffer[2*fft_bin];
-    left_imag *= blurring_buffer[2*fft_bin];
+    left_real *= dry_frac + wet_frac*(attenuation_factor_L);
+    left_imag *= dry_frac + wet_frac*(attenuation_factor_L);
 
-    right_real *= blurring_buffer[2*fft_bin + 1];
-    right_imag *= blurring_buffer[2*fft_bin + 1];
+    right_real *= dry_frac + wet_frac*(attenuation_factor_R);
+    right_imag *= dry_frac + wet_frac*(attenuation_factor_R);
 
     // Re-fold back into complex spectrum
     fft_buffer[2*fft_bin] = (left_real - right_imag)*0.5;
@@ -156,7 +159,7 @@ freemem = (window_buffer = freemem) + MAX_FFT_SIZE;
 freemem = (blurring_buffer = freemem) + MAX_FFT_SIZE+2;
 freemem = (noise_buffer = freemem) + MAX_FFT_SIZE+2;
 
-buffer_length = 4*MAX_FFT_SIZE;
+buffer_length = srate;
 buffer_index = 0;
 freemem = (input_buffer = freemem) + buffer_length*2;
 freemem = (output_buffer = freemem) + buffer_length*2;
@@ -193,8 +196,6 @@ freembuf(freemem);
 
 @sample
 
-running_sum += sqr(spl0) + sqr(spl1);
-
 old_L = input_buffer[buffer_index*2];
 old_R = input_buffer[buffer_index*2 + 1];
 
@@ -204,8 +205,6 @@ input_buffer[buffer_index*2 + 1] = spl1;
 fft_counter += 1;
 fft_counter >= fft_interval ? (
   fft_counter = 0;
-  
-  running_sum = sqrt(running_sum / 2 / fft_interval);
 
   // Copy input to buffer
   bi = buffer_index - fft_size + 1;
@@ -213,12 +212,16 @@ fft_counter >= fft_interval ? (
   loop(fft_size,
     i2 = bi + i;
     i2 < 0 ? i2 += buffer_length;
+    
+    running_sum += sqr(input_buffer[2*i2]) + sqr(input_buffer[2*i2 + 1]);
 
     fft_buffer[2*i] = input_buffer[2*i2]*window_buffer[i];
     fft_buffer[2*i + 1] = input_buffer[2*i2 + 1]*window_buffer[i];
 
     i += 1;
   );
+  
+  running_sum = sqrt(running_sum / 2 / fft_size);
 
   // Process buffer
   fft(fft_buffer, fft_size);
@@ -269,13 +272,13 @@ slider1 > 0.5 ? (
 ) : previous_mode = 0;
 noise_low = dBtoDec(slider3);
 noise_high = dBtoDec(slider4);
-slider6 == 0 ?
+slider6 > 0.5 ?
 (
-  wet_frac = slider5/100;
-  dry_frac = (100-slider5)/100;
-) : (
   dry_frac = 1;
   wet_frac = - slider5/100;
+) : (
+  dry_frac = 1 - slider5/100;
+  wet_frac = + slider5/100;
 );
 
 
