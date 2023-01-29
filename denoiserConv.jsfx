@@ -252,8 +252,6 @@ function denoiseChannel(channel tileBuf inDelBuf fftBuffer outBuf noiseBuffer ru
     
     fft_permute(tileBuf, SIZE/2);
     
-    ZZZ1 = convBuffer[0];
-    
     bandIndex = 0;
     loop(SIZE,
       // calculate log(|H(k)|^2)/4 == log(|H(k)|)/2
@@ -291,9 +289,6 @@ function denoiseChannel(channel tileBuf inDelBuf fftBuffer outBuf noiseBuffer ru
     // un-permute (symmetric operation)
     ceps_permute(convBuffer, SIZE);
 
-    ZZZ2 = convBuffer[0];
-    ZZZ2i = convBuffer[1];
-
     // apply complex exp to reverse log from before
     bandIndex = 0;
     loop(SIZE,
@@ -306,15 +301,14 @@ function denoiseChannel(channel tileBuf inDelBuf fftBuffer outBuf noiseBuffer ru
 
     // clean convBuffer
     ifft(convBuffer, SIZE);
-    //ZZZ3 = convBuffer[0];
+    
     // discard second half of the fir
     memset(convBuffer + SIZE, 0, SIZE);
     
     memcpy(visBuf, convBuffer, SIZE);
 
     fft(convBuffer, SIZE);
-    ZZZ4 = convBuffer[0]; // expect this to be 1 when no denoising 
-
+    
     // perform covolution
     convolve_c(fftBuffer, convBuffer, SIZE);
 
