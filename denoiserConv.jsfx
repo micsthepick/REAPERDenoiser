@@ -275,7 +275,7 @@ function denoiseChannel(channel tileBuf inDelBuf fftBuffer outBuf noiseBuffer ru
     bandIndex = 4;
     // layout of cepstrum: band 0, ny
     // 
-    loop(HALFSIZE-2,
+    loop(HALFSIZE-1,
       // just apply window to negative freq
       convBuffer[bandIndex] *= window_buf[bandIndex*0.25];
       // multiply positive frequency by -1 and window it
