@@ -265,7 +265,7 @@ function denoiseChannel(channel tileBuf inDelBuf fftBuffer outBuf noiseBuffer ru
     // convert to cepstrum
     ifft(convBuffer, SIZE);
 
-    // remove DC and nyquist, and mult +f by -1
+    // remove nyquist, and mult +f by -1
     // f by 2 and -f by 0
     // bands 0 and 1 (indexes 0 1 2 3) represent
     // frequencies 0 and ny respectively
