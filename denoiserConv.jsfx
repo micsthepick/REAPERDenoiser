@@ -199,7 +199,7 @@ function denoiseChannel(channel tileBuf inDelBuf fftBuffer outBuf noiseBuffer ru
 
   // Reached end of a tile?
   samplesCollected >= halfSIZE-1 ? (
-    memset(fftBuffer + SIZE, 0, SIZE); 
+    memset(fftBuffer + SIZE, 0, SIZE);
     fft(fftBuffer, SIZE);
     
     // If slider1 is greater than 0.5 (i.e. the user selected "Record Noise
