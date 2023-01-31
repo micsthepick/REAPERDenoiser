@@ -43,7 +43,7 @@ import cookdsp.jsfx-inc
 @gfx 1080 300
 gfx_set(1, 0, 0);
 bi = 0;
-loop(min(1024, SIZE),
+loop(min(1024, DSIZE),
   gfx_set(1-0.4*(bi&1),0,0);
   gfx_line(bi+28, 150, bi+28, 150-100*visBuf[bi]);
   bi += 1;
@@ -88,16 +88,18 @@ local(i, temp)
 );
 
 // The FFT size will always be constant.
-SIZE = 512;
+SIZE = 256;
+DSIZE = 2*SIZE;
 invSIZE = 1/SIZE;
 invDSIZE = 0.5/SIZE;
 HALFSIZE = SIZE*0.5;
+invSqrt2 = 0.7071067811865475244008443621048490392848359376884740365883;
 
-convBufferL1 = memalloc_(SIZE);
-convBufferR1 = memalloc_(SIZE);
+convBufferL1 = memalloc_(DSIZE);
+convBufferR1 = memalloc_(DSIZE);
 
-convBufferL2 = memalloc_(SIZE);
-convBufferR2 = memalloc_(SIZE);
+convBufferL2 = memalloc_(DSIZE);
+convBufferR2 = memalloc_(DSIZE);
 
 fftOutL1 = memalloc_(SIZE);
 fftOutR1 = memalloc_(SIZE);
@@ -105,9 +107,9 @@ fftOutR1 = memalloc_(SIZE);
 fftOutL2 = memalloc_(SIZE);
 fftOutR2 = memalloc_(SIZE);
 
-window_buf = memalloc_(SIZE*2);
+window_buf = memalloc_(DSIZE);
 
-visBuf = memalloc_(SIZE);
+visBuf = memalloc_(DSIZE);
 
 outBufL1 = memalloc_(SIZE+1);
 outBufR1 = memalloc_(SIZE+1);
@@ -120,8 +122,8 @@ noiseBufferR = memalloc_(HALFSIZE+1);
 
 // fill window_buf with a hahn window
 i = 0;
-loop(SIZE,
-  window_buf[i] = 0.5 - 0.5*cos(2*$pi*i/SIZE);
+loop(DSIZE,
+  window_buf[i] = 0.5 - 0.5*cos(2*$pi*i/DSIZE);
   i += 1;
 );
 
@@ -134,6 +136,8 @@ runningSumR2 = memalloc_(1);
 
 // freembuf is only needed if the memory ever gets assigned to, and then can be freed.
 
+// samplesCollected will be our position in *_history
+samplesCollected = 0;
 
 
 @slider
@@ -156,7 +160,7 @@ slider6 == 0 ?
   dryfrac = 1;
   wetfrac = - slider5/100;
 );
-kSquared = sqr(slider2);
+kSquared = max(sqr(slider2), 0.000001);
 
 
 @sample
@@ -177,16 +181,16 @@ function denoiseChannel(channel fftBuffer outBuf noiseBuffer runningSum convBuff
   sample = spl(channel); // You can also use spl0 or spl1.
   runningSum[] += sample * sample;
   
-  fftBuffer[samplesCollected] = sample*invDSIZE;
+  fftBuffer[samplesCollected] = sample*invSIZE;
   fftBuffer[samplesCollected+HALFSIZE] = 0;
   
   bandIndex = 0;
   loop(HALFSIZE,
-    outBuf[bandIndex] = outBuf[bandIndex+1] + convBuffer[bandIndex] * sample;
+    outBuf[bandIndex] = outBuf[bandIndex+1] + convBuffer[SIZE+bandIndex] * sample;
     bandIndex += 1;
   );
   
-  wet = outBuf[0] * 0.25;
+  wet = outBuf[0] * 0.5;
 
   outVal = wet * wetfrac + sample * dryfrac;
 
@@ -230,14 +234,14 @@ function denoiseChannel(channel fftBuffer outBuf noiseBuffer runningSum convBuff
     // the output signal).
 
     // clear ConvBuffer
-    memset(convBuffer, 0, SIZE);
+    memset(convBuffer, 0, DSIZE);
 
     // Compute |Y(f)|^2 = real(Y(f))^2 + imaginary(Y(f))^2
     yNorm = sqr(fftBuffer[0]);
     // The same for the noise component:
     nNorm = noiseBuffer[0];
 
-    attenuationFactor = nNorm / (nNorm + kSquared * yNorm);
+    attenuationFactor = yNorm / (kSquared * nNorm + yNorm);
     
     ((yNorm + nNorm)*100000000 == 0) ? attenuationFactor = 1;
 
@@ -248,7 +252,7 @@ function denoiseChannel(channel fftBuffer outBuf noiseBuffer runningSum convBuff
     // The same for the noise component:
     nNorm = noiseBuffer[HALFSIZE];
     
-    attenuationFactor = nNorm / (nNorm + kSquared * yNorm);
+    attenuationFactor = yNorm / (kSquared * nNorm + yNorm);
     
     ((yNorm + nNorm)*100000000 == 0) ? attenuationFactor = 1;
     
@@ -262,18 +266,38 @@ function denoiseChannel(channel fftBuffer outBuf noiseBuffer runningSum convBuff
       // The same for the noise component:
       nNorm = noiseBuffer[bandIndex];
       
-      attenuationFactor = nNorm / (nNorm + kSquared * yNorm);
+      attenuationFactor = yNorm / (kSquared * nNorm + yNorm);
       
       ((yNorm + nNorm)*100000000 == 0) ? attenuationFactor = 1;
 
-      convBuffer[2*bandIndex] = attenuationFactor;
+      convBuffer[2*bandIndex] = attenuationFactor * invDSIZE;
       
+      bandIndex += 1;
+    );
+    
+    // extend fftBuffer (ifft, zero pad, fft)
+    ifft_real(convBuffer, SIZE);
+    
+    bandIndex = 0;
+    loop(SIZE,
+      convBuffer[SIZE+bandIndex] = convBuffer[SIZE-1-bandIndex];
       bandIndex += 1;
     );
     
     /*
     bandIndex = 0;
-    loop(SIZE,
+    loop(DSIZE,
+      visBuf[bandIndex] = convBuffer[bandIndex]*SIZE;
+      bandIndex += 1;
+    );
+    //*/
+    
+    // already zero
+    fft_real(convBuffer, DSIZE);
+    
+    /*
+    bandIndex = 0;
+    loop(DSIZE,
       visBuf[bandIndex] = convBuffer[bandIndex];
       bandIndex += 1;
     );
@@ -289,63 +313,59 @@ function denoiseChannel(channel fftBuffer outBuf noiseBuffer runningSum convBuff
     
     minVal *= 0.0000001;
     
-    convBuffer[0] = log(convBuffer[0]+minVal)*invDSIZE;
-    convBuffer[1] = log(convBuffer[1]+minVal)*invDSIZE;
+    convBuffer[0] = 0;//log(convBuffer[0]+minVal)*invDSIZE;
+    convBuffer[1] = 0;//log(convBuffer[0]+minVal)*invDSIZE;
     bandIndex = 2;
-    loop(HALFSIZE-1,
+    loop(SIZE-1,
       // calculate log(|H(k)|^2)/4 == log(|H(k)|)/2
-      convBuffer[bandIndex] = log(convBuffer[bandIndex]+minVal)*invDSIZE;
-      convBuffer[bandIndex+1] = 0;
+      convBuffer[bandIndex+1] = log(convBuffer[bandIndex]+minVal)*invDSIZE*0.5;
+      convBuffer[bandIndex] = 0;
       bandIndex += 2;
     );
     
     /*
     bandIndex = 0;
-    loop(SIZE,
+    loop(DSIZE,
       visBuf[bandIndex] = convBuffer[bandIndex]*SIZE;
       bandIndex += 1;
     );
     //*/
 
     // convert to cepstrum
-    ifft_real(convBuffer, SIZE);
+    ifft_real(convBuffer, DSIZE);
 
     /*
     bandIndex = 0;
-    loop(SIZE,
-      visBuf[bandIndex] = convBuffer[bandIndex]*4;
+    loop(DSIZE,
+      visBuf[bandIndex] = convBuffer[bandIndex];
       bandIndex += 1;
     );
     //*/
     
     // 0, +1, +2... ny, -ny+1, -ny+2... -3, -2, -1
     
-    //bandIndex = 1;
-    //loop(SIZE-1,
-    //  bands[bandIndex] *= 2;
-    //);
     // remove nyquist and dc,
-    // mult f by 2 and -f by 0
-    //convBuffer[0] = 0;
-    //bandIndex = 1;
-    //loop(HALFSIZE-1,
-    //  convBuffer[bandIndex] *= 2;
-    //  // go to next frequency
-    //  bandIndex += 1;
-    //);
-    //convBuffer[HALFSIZE] = 0;
-    //bandIndex = HALFSIZE+1;
-    //loop(HALFSIZE,
-    //  // window neagtive frequency
-    //  convBuffer[bandIndex] = 0;//*= 0*window_buf[2*bandIndex - SIZE]*invDSIZE;
-    //  // go to next frequency
-    //  bandIndex += 1;
-    //);
+      // mult f by 2 and -f by 0
+    convBuffer[0] = 0;
+    bandIndex = 1;
+    loop(SIZE-1,
+      convBuffer[bandIndex] *= window_buf[bandIndex*2];
+      // go to next frequency
+      bandIndex += 1;
+    );
+    convBuffer[SIZE] = 0;
+    bandIndex = SIZE+1;
+    loop(SIZE-1,
+      // window neagtive frequency
+      convBuffer[bandIndex] *= -1*window_buf[bandIndex*2-DSIZE];
+      // go to next frequency
+      bandIndex += 1;
+    );
     
-    /*
+    //*
     bandIndex = 0;
-    loop(SIZE,
-      visBuf[bandIndex] = convBuffer[bandIndex]*4;
+    loop(DSIZE,
+      visBuf[bandIndex] = convBuffer[bandIndex]*10;
       bandIndex += 1;
     );
     //*/
@@ -353,58 +373,67 @@ function denoiseChannel(channel fftBuffer outBuf noiseBuffer runningSum convBuff
     //convBuffer[0] = convBuffer[1] = 0;
     
     // reverse cepstrum into fft realm
-    fft_real(convBuffer, SIZE);
+    fft_real(convBuffer, DSIZE);
 
-    //*
+    /*
     bandIndex = 0;
-    loop(SIZE,
+    loop(DSIZE,
       visBuf[bandIndex] = convBuffer[bandIndex];
       bandIndex += 1;
     );
     //*/
 
+    // un-permute (symmetric operation)
+    //ceps_permute(convBuffer, SIZE);
+
     // apply complex exp to reverse log from before
-    convBuffer[0] = 0;//exp(convBuffer[0])*invDSIZE;
-    convBuffer[1] = 0;//exp(convBuffer[1])*invDSIZE;
+    convBuffer[0] = exp(convBuffer[0])*invDSIZE;
+    convBuffer[1] = exp(convBuffer[1])*invDSIZE;
     bandIndex = 2;
-    loop(HALFSIZE-1,
+    loop(SIZE-1,
       // e^(a+bj) = e*a(cos(b) + j*sin(b))
-      mult = exp(convBuffer[bandIndex+1])*invDSIZE;
-      ph = convBuffer[bandIndex];
-      mult = 
+      mult = exp(convBuffer[bandIndex]) * invDSIZE;
+      ph = convBuffer[bandIndex+1];
+      convBuffer[bandIndex]   = mult * cos(ph);
       convBuffer[bandIndex+1] = mult * sin(ph);
-      convBuffer[bandIndex] = mult * cos(ph);
       bandIndex += 2;
     );
 
+    /*
+    bandIndex = 0;
+    loop(DSIZE,
+      visBuf[bandIndex] = convBuffer[bandIndex]*SIZE;
+      bandIndex += 1;
+    );
+    //*/
+
     // clean convBuffer
-    ifft_real(convBuffer, SIZE);
-    
-    ZZZ = convBuffer[0];
+    ifft_real(convBuffer, DSIZE);
     
     /*
     bandIndex = 0;
-    loop(SIZE,
+    loop(DSIZE,
       visBuf[bandIndex] = convBuffer[bandIndex];
       bandIndex += 1;
     );
     //*/
     
     // discard second half of the fir
-    memset(convBuffer + HALFSIZE, 0, HALFSIZE);
+    //memset(convBuffer + HALFSIZE, 0, HALFSIZE);
     
-    bandIndex = 1;
-    loop(HALFSIZE-1,
-      convBuffer[bandIndex] *= window_buf[HALFSIZE+bandIndex-1];
+    
+    /*bandIndex = 1;
+    loop(SIZE-1,
+      convBuffer[bandIndex] *= window_buf[SIZE+bandIndex-1];
       bandIndex += 1;
-    );
+    );*/
     //convBuffer[0] = 1;
     
     
     /*
     bandIndex = 0;
-    loop(SIZE,
-      visBuf[bandIndex] = convBuffer[bandIndex]*HALFSIZE;
+    loop(DSIZE,
+      visBuf[bandIndex] = convBuffer[bandIndex];
       bandIndex += 1;
     );
     //*/
@@ -464,6 +493,7 @@ samplesCollected >= HALFSIZE*0.5 ?
 
 spl0 = L0 * tileFrac0 + L1 * tileFrac1;
 spl1 = R0 * tileFrac0 + R1 * tileFrac1;
+spl0 = spl1;
 
 @serialize
 // Sliders are serialized automatically, so all we have to serialize is the two
