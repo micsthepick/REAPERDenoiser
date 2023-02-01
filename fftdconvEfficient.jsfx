@@ -39,19 +39,19 @@ out_pin:Denoised Audio 2
 
 import cookdsp.jsfx-inc
 
-@gfx 1080 300
-gfx_set(1, 0, 0);
-bi = 0;
+@gfx 1044 400
+gfx_set(0, 1, 0);
+i = 0;
+gi = 10;
+idiff = max(1, DSIZE/1024);
 loop(min(1024, DSIZE),
-  gfx_set(1-0.4*(bi&1),0,0);
-  gfx_line(bi+28, 150, bi+28, 150-100*visBuf[bi]);
-  bi += 1;
+  gfx_line(gi, 200, gi, 200-50*visBuf[i]);
+  i += idiff;
+  gi += 1;
 );
 
-@init
 
-hpL.buthp(200);
-hpR.buthp(200);
+@init
 
 // function to convert decibel measurement to decimal value
 function dBtoDec(value)
@@ -65,37 +65,31 @@ function memalloc_(sz) (
     // (avoids problems with memory layout when using
     //    FFT/MDCT and trying to manually keep track of the layout)
     __memory_next -= 8;
-    memalloc(sz);
+    memalloc(sz, 1);
 );
 
 // The FFT size will always be constant.
-SIZE = 512;
+SIZE = 1024;
 DSIZE = 2*SIZE;
 invSIZE = 1/SIZE;
 invDSIZE = 0.5/SIZE;
 HALFSIZE = SIZE*0.5;
 
-convBufferL1 = memalloc_(DSIZE);
-convBufferR1 = memalloc_(DSIZE);
+convBufferL = memalloc_(DSIZE);
+convBufferR = memalloc_(DSIZE);
 
-convBufferL2 = memalloc_(DSIZE);
-convBufferR2 = memalloc_(DSIZE);
-
-fftOutL1 = memalloc_(DSIZE);
-fftOutR1 = memalloc_(DSIZE);
-
-fftOutL2 = memalloc_(DSIZE);
-fftOutR2 = memalloc_(DSIZE);
+fftOutL = memalloc_(DSIZE);
+fftOutR = memalloc_(DSIZE);
 
 visBuf = memalloc_(DSIZE);
 
 window_buf = memalloc_(SIZE);
 
-outBufL1 = memalloc_(SIZE+1);
-outBufR1 = memalloc_(SIZE+1);
+outBufL = memalloc_(SIZE+1);
+outBufR = memalloc_(SIZE+1);
 
-outBufL2 = memalloc_(SIZE+1);
-outBufR2 = memalloc_(SIZE+1);
+delL = memalloc_(HALFSIZE);
+delR = memalloc_(HALFSIZE);
 
 noiseBufferL = memalloc_(HALFSIZE+1);
 noiseBufferR = memalloc_(HALFSIZE+1);
@@ -107,11 +101,8 @@ loop(SIZE,
   i += 1;
 );
 
-runningSumL1 = memalloc_(1);
-runningSumL2 = memalloc_(1);
-
-runningSumR1 = memalloc_(1);
-runningSumR2 = memalloc_(1);
+runningSumL = memalloc_(1);
+runningSumR = memalloc_(1);
 
 
 // freembuf is only needed if the memory ever gets assigned to, and then can be freed.
@@ -146,9 +137,6 @@ pdc_top_ch = 2;
 
 @sample
 
-spl0 = hpL.buthp_do(spl0);
-spl1 = hpR.buthp_do(spl1);
-
 // We'll write a function to denoise a single channel, and then we'll call this
 // for each of the channels.
 // In this case, we'll pass in the channel number, the four input and output
@@ -159,13 +147,22 @@ spl1 = hpR.buthp_do(spl1);
 // the right channel is channel 1).
 // Functions can return values, but this one won't return anything.
 // Swapping tiles and resetting samplesCollected will be managed by the caller.
-function denoiseChannel(channel fftBuffer outBuf noiseBuffer runningSum convBuffer samplesCollected)
+function denoiseChannel(channel fftBuffer inBuf outBuf noiseBuffer runningSum convBuffer samplesCollected)
 (
   // Read out input audio
   sample = spl(channel); // You can also use spl0 or spl1.
   runningSum[] += sample * sample;
   
-  wet = fftBuffer[samplesCollected*2+SIZE];
+  dry = inBuf[samplesCollected];
+
+  wet = outBuf[samplesCollected];
+  
+  ZZZd = dry;
+  ZZZw = wet;
+
+  inBuf[samplesCollected] = sample;
+
+  outBuf[samplesCollected] = outBuf[samplesCollected + HALFSIZE];
   
   fftBuffer[samplesCollected*2] = sample*invSIZE;
   fftBuffer[samplesCollected*2+1] = 0;
@@ -178,10 +175,8 @@ function denoiseChannel(channel fftBuffer outBuf noiseBuffer runningSum convBuff
     outBuf[bandIndex] = outBuf[bandIndex+1] + convBuffer[2*bandIndex] * sample;
     bandIndex += 1;
   );*/
-  
-  wet = outBuf[0];
 
-  outVal = wet * wetfrac;// + sample * dryfrac;
+  outVal = wet * wetfrac + dry * dryfrac;
 
   // Reached end of a tile?
   samplesCollected >= HALFSIZE-1 ? (
@@ -192,7 +187,7 @@ function denoiseChannel(channel fftBuffer outBuf noiseBuffer runningSum convBuff
     runningSumVal = sqrt(runningSum[]*invSIZE);
     runningSum[] = 0;
     (slider1 > 0.5 && runningSumVal >= noiseLow
-      && runningSumVal <= noiseHigh) ? 
+      && runningSumVal <= noiseHigh) ?
     (
       // for each band, compare the norm of the noise in this frame.
       // If it is greater than what's already there for this band, then copy
@@ -215,9 +210,6 @@ function denoiseChannel(channel fftBuffer outBuf noiseBuffer runningSum convBuff
     // FFT (so that if we don't do any denoising, the input signal is equal to
     // the output signal).
 
-    // clear ConvBuffer
-    memset(convBuffer, 0, DSIZE);
-
     // Loop over each band, from bandIndex = 1 to HALFSIZE - 1.
     // caluclate attenuationfactor and store in convBuffer as a real valued complex number.
     bandIndex = 0;
@@ -232,6 +224,7 @@ function denoiseChannel(channel fftBuffer outBuf noiseBuffer runningSum convBuff
       ((yNorm + nNorm)*100000000 == 0) ? attenuationFactor = 1;
 
       convBuffer[2*bandIndex] = attenuationFactor;
+      convBuffer[2*bandIndex+1] = 0;
       
       bandIndex += 1;
     );
@@ -260,7 +253,7 @@ function denoiseChannel(channel fftBuffer outBuf noiseBuffer runningSum convBuff
     bandIndex = 0;
     loop(SIZE,
       // calculate log(|H(k)|^2)/4 == log(|H(k)|)/2
-      convBuffer[bandIndex] = log(convBuffer[bandIndex]+minVal)*invDSIZE;
+      convBuffer[bandIndex] = log(convBuffer[bandIndex]+minVal)*invSIZE;
       bandIndex += 2;
     );
     
@@ -278,7 +271,7 @@ function denoiseChannel(channel fftBuffer outBuf noiseBuffer runningSum convBuff
     /*
     bandIndex = 0;
     loop(DSIZE,
-      visBuf[bandIndex] = convBuffer[bandIndex]*4;
+      visBuf[bandIndex] = convBuffer[bandIndex];
       bandIndex += 1;
     );
     //*/
@@ -290,25 +283,23 @@ function denoiseChannel(channel fftBuffer outBuf noiseBuffer runningSum convBuff
       bandIndex += 2;
     );
     
-    //*
+    /*
     bandIndex = 0;
-    loop(SIZE,
-      visBuf[bandIndex] = convBuffer[bandIndex]*4;
+    loop(DSIZE,
+      visBuf[bandIndex] = convBuffer[bandIndex]*SIZE;
       bandIndex += 1;
     );
     //*/
 
     memset(convBuffer+SIZE, 0, SIZE);
     
-    //convBuffer[0] = convBuffer[1] = 0;
-    
     // reverse cepstrum into fft realm
     fft(convBuffer, SIZE);
 
-    /*
+    //*
     bandIndex = 0;
     loop(DSIZE,
-      visBuf[bandIndex] = convBuffer[bandIndex]*0.25;
+      visBuf[bandIndex] = convBuffer[bandIndex];
       bandIndex += 1;
     );
     //*/
@@ -336,7 +327,7 @@ function denoiseChannel(channel fftBuffer outBuf noiseBuffer runningSum convBuff
     /*
     bandIndex = 0;
     loop(DSIZE,
-      visBuf[bandIndex] = convBuffer[bandIndex];
+      visBuf[bandIndex] = convBuffer[bandIndex]*SIZE;
       bandIndex += 1;
     );
     //*/
@@ -352,7 +343,7 @@ function denoiseChannel(channel fftBuffer outBuf noiseBuffer runningSum convBuff
     //convBuffer[0] = 1;
     
     
-    //*
+    /*
     bandIndex = 0;
     loop(SIZE,
       visBuf[bandIndex+SIZE] = convBuffer[bandIndex*2];
@@ -361,66 +352,40 @@ function denoiseChannel(channel fftBuffer outBuf noiseBuffer runningSum convBuff
      //*/
 
     fft(convBuffer, SIZE);
+    
+    /*
+    bandIndex = 0;
+    loop(SIZE,
+      visBuf[bandIndex+SIZE] = convBuffer[bandIndex*2]*SIZE;
+      bandIndex += 1;
+    );
+    //*/
 
     convolve_c(fftBuffer, convBuffer, SIZE);
-
+    
+    ifft(fftBuffer, SIZE);
+    
+    // copy to outBuf
+    bandIndex = 0;
+    loop(HALFSIZE,
+      outBuf[bandIndex] += fftBuffer[bandIndex*2];
+      bandIndex += 1;
+    );
+    loop(HALFSIZE,
+      outBuf[bandIndex] = fftBuffer[bandIndex*2];
+      bandIndex += 1;
+    );
   ); // samplesCollected >= HALFSIZE-1
   outVal;
 ); // function denoiseChannel(...
 
-tilePos0 = samplesCollected + HALFSIZE*0.5;
-tilePos1 = samplesCollected;
-
-tileFrac0 = window_buf[tilePos1*2];
-tileFrac1 = 1-tileFrac0;
-
 // Now, call denoiseChannel for each of the channels.
-L0 = denoiseChannel(0, fftOutL1, outBufL1, noiseBufferL, runningSumL1, convBufferL1, tilePos0);
-R0 = denoiseChannel(1, fftOutR1, outBufR1, noiseBufferR, runningSumR1, convBufferR1, tilePos0);
-L1 = denoiseChannel(0, fftOutL2, outBufL2, noiseBufferL, runningSumL2, convBufferL2, tilePos1);
-R1 = denoiseChannel(1, fftOutR2, outBufR2, noiseBufferR, runningSumR2, convBufferR2, tilePos1);
+spl0 = denoiseChannel(0, fftOutL, delL, outBufL, noiseBufferL, runningSumL, convBufferL, samplesCollected);
+spl1 = denoiseChannel(1, fftOutR, delR, outBufR, noiseBufferR, runningSumR, convBufferR, samplesCollected);
 // Go to the next sample
 samplesCollected += 1;
-samplesCollected >= HALFSIZE*0.5 ?
-(
-  temp = convBufferR1;
-  convBufferR1 = convBufferR2;
-  convBufferR2 = temp;
-  
-  temp = convBufferL1;
-  convBufferL1 = convBufferL2;
-  convBufferL2 = temp;
-  
-  temp = outBufR1;
-  outBufR1 = outBufR2;
-  outBufR2 = temp;
-  
-  temp = outBufL1;
-  outBufL1 = outBufL2;
-  outBufL2 = temp;
-  
-  temp = fftoutR1;
-  fftoutR1 = fftoutR2;
-  fftoutR2 = temp;
-  
-  temp = fftoutL1;
-  fftoutL1 = fftoutL2;
-  fftoutL2 = temp;
-  
-  temp = runningSumR1;
-  runningSumR1 = runningSumR2;
-  runningSumR2 = temp;
-  
-  temp = runningSumL1;
-  runningSumL1 = runningSumL2;
-  runningSumL2 = temp;
-  
-  samplesCollected = 0;
-);
+samplesCollected %= HALFSIZE;
 
-spl0 = L0 * tileFrac0 + L1 * tileFrac1;
-spl1 = R0 * tileFrac0 + R1 * tileFrac1;
-      
 
 @serialize
 // Sliders are serialized automatically, so all we have to serialize is the two
