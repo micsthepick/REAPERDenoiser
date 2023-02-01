@@ -51,6 +51,7 @@ loop(min(1024, DSIZE),
 @init
 // don't add noise to an already silent signal
 ext_nodenorm = 1;
+ext_noinit = 1;
 
 // function to convert decibel measurement to decimal value
 function dBtoDec(value)
@@ -77,7 +78,7 @@ function memalloc_(sz, reinit) (
 );
 
 // The FFT size will always be constant.
-SIZE = 1024;
+SIZE = 8192;
 DSIZE = 2*SIZE;
 invSIZE = 1/SIZE;
 invDSIZE = 0.5/SIZE;
