@@ -24,6 +24,10 @@ slider4:0<-120,0,0.1>Noise detext max (dB)
 // any amount of noise reduction, up to 100%
 slider5:100<0,100,0.5>Wet/dry mix (0 = all dry, 100 = all wet)
 
+slider6:0<0,10,0.01>Decay factor
+
+slider7:1<0.01,1,0.01>Tail Size
+
 // Here we can label our input and output pins. This also tells REAPER how many
 // channels we can handle. In this case, the plugin is stereo (a monophonic
 // plugin would be simpler, but I almost always use this to denoise stereo
@@ -78,7 +82,7 @@ function memalloc_(sz, reinit) (
 );
 
 // The FFT size will always be constant.
-SIZE = 8192;
+SIZE = 16384;
 DSIZE = 2*SIZE;
 invSIZE = 1/SIZE;
 invDSIZE = 0.5/SIZE;
@@ -127,9 +131,11 @@ slider1 > 0.5 ? (
 ) : previousMode = 1;
 noiseLow = dBtoDec(slider3);
 noiseHigh = dBtoDec(slider4);
-dryfrac = 1;
-wetfrac = - slider5/100;
+dryfrac = slider5*0.01;
+wetfrac = 1 - slider5*0.02;
 strength = exp(-slider2);
+df = exp(slider6);
+tail = 0|max(4, min(SIZE, SIZE*slider7));
 
 pdc_delay = HALFSIZE;
 pdc_bot_ch = 0;
@@ -251,7 +257,7 @@ function denoiseChannel(channel fftBuffer inBuf outBuf noiseBuffer runningSum co
     bandIndex = 0;
     loop(SIZE,
       // calculate log(|H(k)|^2)/4 == log(|H(k)|)/2
-      convBuffer[bandIndex] = log(convBuffer[bandIndex]+minVal)*invDSIZE;
+      convBuffer[bandIndex] = log(convBuffer[bandIndex]+minVal)*invSIZE;
       bandIndex += 2;
     );
     
@@ -274,15 +280,16 @@ function denoiseChannel(channel fftBuffer inBuf outBuf noiseBuffer runningSum co
     );
     //*/
     
-    bandIndex = 0;
-    loop(SIZE,
-      convBuffer[bandIndex] *= 2 * window_buf[bandIndex];
+    convBuffer[0] = 0;
+    /*bandIndex = 1;
+    loop(SIZE-1,
+      convBuffer[bandIndex] *= 1;// * window_buf[bandIndex];
       bandIndex += 1;
-    );
+    );*/
 
     memset(convBuffer+SIZE, 0, SIZE);
     
-    //*
+    /*
     bandIndex = 0;
     loop(SIZE,
       visBuf[bandIndex] = convBuffer[bandIndex]*SIZE;
@@ -329,8 +336,16 @@ function denoiseChannel(channel fftBuffer inBuf outBuf noiseBuffer runningSum co
     );
     //*/
     
+    bandIndex = 0;
+    loop(tail,
+      w = (0.5+0.5*cos($pi*bandIndex/tail))^df;
+      convBuffer[bandIndex] *= w;
+      convBuffer[bandIndex+1] *= w;
+      bandIndex += 2;
+    );
+    
     // discard second half of the fir
-    memset(convBuffer + SIZE, 0, SIZE);
+    memset(convBuffer + tail, 0, DSIZE - tail);
   
     //bandIndex = 0;
     //loop(SIZE,
@@ -340,10 +355,11 @@ function denoiseChannel(channel fftBuffer inBuf outBuf noiseBuffer runningSum co
     //convBuffer[0] = 1;
     
     
+    visBuf[0] = 0;
     //*
-    bandIndex = 0;
-    loop(SIZE,
-      visBuf[bandIndex+SIZE] = convBuffer[bandIndex];
+    bandIndex = 1;
+    loop(DSIZE,
+      visBuf[bandIndex] = convBuffer[bandIndex]*44;
       bandIndex += 1;
     );
      //*/
