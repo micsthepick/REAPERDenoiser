@@ -21,11 +21,8 @@ slider3:-120<-120,0,0.1>Noise detect min (dB)
 slider4:0<-120,0,0.1>Noise detext max (dB)
 
 // This defines a slider to mix between no noise reduction or
-// any amount of noise reduction.
+// any amount of noise reduction, up to 100%
 slider5:100<0,100,0.5>Wet/dry mix (0 = all dry, 100 = all wet)
-
-// checkbox? to enable/disable difference monitoring
-slider6:0<0,1,1{Off, On}>Difference monitoring
 
 // Here we can label our input and output pins. This also tells REAPER how many
 // channels we can handle. In this case, the plugin is stereo (a monophonic
@@ -65,7 +62,16 @@ function memalloc_(sz) (
     // (avoids problems with memory layout when using
     //    FFT/MDCT and trying to manually keep track of the layout)
     __memory_next -= 8;
-    memalloc(sz, 1);
+    memalloc(sz);
+);
+
+
+function memalloc_(sz, reinit) (
+    // compensate for cookdsp adding some extra space
+    // (avoids problems with memory layout when using
+    //    FFT/MDCT and trying to manually keep track of the layout)
+    __memory_next -= 8;
+    memalloc(sz, reinit);
 );
 
 // The FFT size will always be constant.
@@ -104,9 +110,7 @@ loop(SIZE,
 runningSumL = memalloc_(1);
 runningSumR = memalloc_(1);
 
-
-// freembuf is only needed if the memory ever gets assigned to, and then can be freed.
-
+freembuf(__memory_next);
 
 @slider
 // A simple function to zero out the noise buffers when switching mode to "Record Noise Sample"
@@ -120,14 +124,8 @@ slider1 > 0.5 ? (
 ) : previousMode = 0;
 noiseLow = dBtoDec(slider3);
 noiseHigh = dBtoDec(slider4);
-slider6 == 1 ?
-(
-  wetfrac = slider5/100;
-  dryfrac = (100-slider5)/100;
-) : (
-  dryfrac = 1;
-  wetfrac = - slider5/100;
-);
+dryfrac = 1;
+wetfrac = - slider5/100;
 strength = exp(-slider2);
 
 pdc_delay = HALFSIZE;
@@ -389,4 +387,4 @@ samplesCollected %= HALFSIZE;
 // state of the plugin from a serialized version, these functions copy data into
 // noiseBufferL and noiseBufferR. But when writing out the state of the plugin,
 // they work the other way, copying data out of noiseBufferL and noiseBufferR.
-file_mem(0, noiseBufferL, SIZE+2); // temporarily disabled while debugging a heisenbug
+//file_mem(0, noiseBufferL, SIZE+2); // temporarily disabled while debugging a heisenbug
