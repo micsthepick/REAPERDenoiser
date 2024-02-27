@@ -10,7 +10,7 @@ slider1:0<0,1,1{Denoise Input, Record Noise Sample}>Noise Collection Mode
 // This defines a slider that can be varied between 0.0 and 10.0 in steps of
 // 0.001, with default value 1.0. (If slider2 is equal to 0.0, this plugin
 // shouldn't really do anything to the input audio.)
-slider2:0.0<0.0,10.0,0.001>Noise Scale
+slider2:1.0<1.0,100.0,0.001>Noise Scale
 
 // This defines a slider that specifies the max level (in dB)
 // of the noise that is recorded
@@ -82,7 +82,7 @@ function memalloc_(sz, reinit) (
 );
 
 // The FFT size will always be constant.
-SIZE = 16384;
+SIZE = 8192;
 DSIZE = 2*SIZE;
 invSIZE = 1/SIZE;
 invDSIZE = 0.5/SIZE;
@@ -131,9 +131,11 @@ slider1 > 0.5 ? (
 ) : previousMode = 1;
 noiseLow = dBtoDec(slider3);
 noiseHigh = dBtoDec(slider4);
-dryfrac = slider5*0.01;
-wetfrac = 1 - slider5*0.02;
-strength = exp(-slider2);
+//dryfrac = slider5*0.01;
+//wetfrac = 1 - slider5*0.02;
+dryfrac = 1 - slider5/100;
+wetfrac = slider5/100;
+strength = sqr(slider2);
 df = exp(slider6);
 tail = 0|max(4, min(SIZE, SIZE*slider7));
 
@@ -223,7 +225,7 @@ function denoiseChannel(channel fftBuffer inBuf outBuf noiseBuffer runningSum co
       // The same for the noise component:
       nNorm = noiseBuffer[min(bandIndex, SIZE-bandIndex)];
       
-      attenuationFactor = nNorm / (strength * yNorm + nNorm);
+      attenuationFactor = yNorm / (strength * nNorm + yNorm);
       
       ((yNorm + nNorm)*100000000 == 0) ? attenuationFactor = 1;
 
@@ -280,7 +282,7 @@ function denoiseChannel(channel fftBuffer inBuf outBuf noiseBuffer runningSum co
     );
     //*/
     
-    convBuffer[0] = 0;
+    convBuffer[0] *= 0.5;
     /*bandIndex = 1;
     loop(SIZE-1,
       convBuffer[bandIndex] *= 1;// * window_buf[bandIndex];
@@ -355,9 +357,9 @@ function denoiseChannel(channel fftBuffer inBuf outBuf noiseBuffer runningSum co
     //convBuffer[0] = 1;
     
     
-    visBuf[0] = 0;
+    //convBuffer[0] *= 0.5;
     //*
-    bandIndex = 1;
+    bandIndex = 0;
     loop(DSIZE,
       visBuf[bandIndex] = convBuffer[bandIndex]*44;
       bandIndex += 1;
