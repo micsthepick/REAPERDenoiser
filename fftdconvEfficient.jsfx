@@ -10,7 +10,7 @@ slider1:0<0,1,1{Denoise Input, Record Noise Sample}>Noise Collection Mode
 // This defines a slider that can be varied between 0.0 and 10.0 in steps of
 // 0.001, with default value 1.0. (If slider2 is equal to 0.0, this plugin
 // shouldn't really do anything to the input audio.)
-slider2:0.0<-10.0,10.0,0.001>Noise Scale
+slider2:0.0<0.0,10.0,0.001>Noise Scale
 
 // This defines a slider that specifies the max level (in dB)
 // of the noise that is recorded
@@ -128,7 +128,7 @@ slider6 == 1 ?
   dryfrac = 1;
   wetfrac = - slider5/100;
 );
-kSquared = exp(-slider2);
+strength = exp(-slider2);
 
 pdc_delay = HALFSIZE;
 pdc_bot_ch = 0;
@@ -156,9 +156,6 @@ function denoiseChannel(channel fftBuffer inBuf outBuf noiseBuffer runningSum co
   dry = inBuf[samplesCollected];
 
   wet = outBuf[samplesCollected];
-  
-  ZZZd = dry;
-  ZZZw = wet;
 
   inBuf[samplesCollected] = sample;
 
@@ -219,7 +216,7 @@ function denoiseChannel(channel fftBuffer inBuf outBuf noiseBuffer runningSum co
       // The same for the noise component:
       nNorm = noiseBuffer[min(bandIndex, SIZE-bandIndex)];
       
-      attenuationFactor = nNorm / (kSquared * yNorm + nNorm);
+      attenuationFactor = nNorm / (strength * yNorm + nNorm);
       
       ((yNorm + nNorm)*100000000 == 0) ? attenuationFactor = 1;
 
@@ -253,7 +250,7 @@ function denoiseChannel(channel fftBuffer inBuf outBuf noiseBuffer runningSum co
     bandIndex = 0;
     loop(SIZE,
       // calculate log(|H(k)|^2)/4 == log(|H(k)|)/2
-      convBuffer[bandIndex] = log(convBuffer[bandIndex]+minVal);
+      convBuffer[bandIndex] = log(convBuffer[bandIndex]+minVal)*invDSIZE;
       bandIndex += 2;
     );
     
@@ -278,7 +275,7 @@ function denoiseChannel(channel fftBuffer inBuf outBuf noiseBuffer runningSum co
     
     bandIndex = 0;
     loop(SIZE,
-      convBuffer[bandIndex] *= 2 * window_buf[bandIndex] * invSIZE;
+      convBuffer[bandIndex] *= 2 * window_buf[bandIndex];
       bandIndex += 1;
     );
 
@@ -286,7 +283,7 @@ function denoiseChannel(channel fftBuffer inBuf outBuf noiseBuffer runningSum co
     
     //*
     bandIndex = 0;
-    loop(DSIZE,
+    loop(SIZE,
       visBuf[bandIndex] = convBuffer[bandIndex]*SIZE;
       bandIndex += 1;
     );
@@ -342,10 +339,10 @@ function denoiseChannel(channel fftBuffer inBuf outBuf noiseBuffer runningSum co
     //convBuffer[0] = 1;
     
     
-    /*
+    //*
     bandIndex = 0;
     loop(SIZE,
-      visBuf[bandIndex+SIZE] = convBuffer[bandIndex*2];
+      visBuf[bandIndex+SIZE] = convBuffer[bandIndex];
       bandIndex += 1;
     );
      //*/
