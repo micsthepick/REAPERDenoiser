@@ -139,6 +139,9 @@ strength = sqr(slider2);
 df = exp(slider6);
 tail = 0|max(4, min(SIZE, SIZE*slider7));
 
+ss = 1 + sqrt(strength);
+invss = 1 / ss;
+
 pdc_delay = HALFSIZE;
 pdc_bot_ch = 0;
 pdc_top_ch = 2;
@@ -357,11 +360,11 @@ function denoiseChannel(channel fftBuffer inBuf outBuf noiseBuffer runningSum co
     //convBuffer[0] = 1;
     
     
-    //convBuffer[0] *= 0.5;
+    convBuffer[0] *= invss;
     //*
     bandIndex = 0;
     loop(DSIZE,
-      visBuf[bandIndex] = convBuffer[bandIndex]*44;
+      visBuf[bandIndex] = convBuffer[bandIndex*0.5]*44*ss;
       bandIndex += 1;
     );
      //*/
