@@ -49,6 +49,8 @@ loop(min(1024, DSIZE),
 
 
 @init
+// don't add noise to an already silent signal
+ext_nodenorm = 1;
 
 // function to convert decibel measurement to decimal value
 function dBtoDec(value)
@@ -97,8 +99,8 @@ outBufR = memalloc_(SIZE+1);
 delL = memalloc_(HALFSIZE);
 delR = memalloc_(HALFSIZE);
 
-noiseBufferL = memalloc_(HALFSIZE+1);
-noiseBufferR = memalloc_(HALFSIZE+1);
+noiseBufferL = memalloc_(HALFSIZE+1, 1);
+noiseBufferR = memalloc_(HALFSIZE+1, 1);
 
 // fill window_buf with a hahn window
 i = 0;
@@ -117,11 +119,11 @@ freembuf(__memory_next);
 // previousMode should default to 0 on first initialization, but setting it to 0 in @init will cause
 // this code to get run again, and the noise profile lost even when switching to "Denoise Input"
 slider1 > 0.5 ? (
-  previousMode < 0.5 ? (
+  previousMode > 0.5 ? (
     memset(noiseBufferL, 0, SIZE+2);
-    previousMode = 1;
+    previousMode = 0;
   )
-) : previousMode = 0;
+) : previousMode = 1;
 noiseLow = dBtoDec(slider3);
 noiseHigh = dBtoDec(slider4);
 dryfrac = 1;
@@ -387,4 +389,5 @@ samplesCollected %= HALFSIZE;
 // state of the plugin from a serialized version, these functions copy data into
 // noiseBufferL and noiseBufferR. But when writing out the state of the plugin,
 // they work the other way, copying data out of noiseBufferL and noiseBufferR.
-//file_mem(0, noiseBufferL, SIZE+2); // temporarily disabled while debugging a heisenbug
+file_var(0, previousMode);
+file_mem(0, noiseBufferL, SIZE+2);
