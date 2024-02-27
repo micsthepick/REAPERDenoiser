@@ -253,7 +253,7 @@ function denoiseChannel(channel fftBuffer inBuf outBuf noiseBuffer runningSum co
     bandIndex = 0;
     loop(SIZE,
       // calculate log(|H(k)|^2)/4 == log(|H(k)|)/2
-      convBuffer[bandIndex] = log(convBuffer[bandIndex]+minVal)*invSIZE;
+      convBuffer[bandIndex] = log(convBuffer[bandIndex]+minVal);
       bandIndex += 2;
     );
     
@@ -277,26 +277,25 @@ function denoiseChannel(channel fftBuffer inBuf outBuf noiseBuffer runningSum co
     //*/
     
     bandIndex = 0;
-    loop(HALFSIZE,
-      convBuffer[bandIndex] *= 2 * window_buf[bandIndex];
-      convBuffer[bandIndex+1] = 0;
-      bandIndex += 2;
+    loop(SIZE,
+      convBuffer[bandIndex] *= 2 * window_buf[bandIndex] * invSIZE;
+      bandIndex += 1;
     );
+
+    memset(convBuffer+SIZE, 0, SIZE);
     
-    /*
+    //*
     bandIndex = 0;
     loop(DSIZE,
       visBuf[bandIndex] = convBuffer[bandIndex]*SIZE;
       bandIndex += 1;
     );
     //*/
-
-    memset(convBuffer+SIZE, 0, SIZE);
     
     // reverse cepstrum into fft realm
     fft(convBuffer, SIZE);
 
-    //*
+    /*
     bandIndex = 0;
     loop(DSIZE,
       visBuf[bandIndex] = convBuffer[bandIndex];
@@ -393,4 +392,4 @@ samplesCollected %= HALFSIZE;
 // state of the plugin from a serialized version, these functions copy data into
 // noiseBufferL and noiseBufferR. But when writing out the state of the plugin,
 // they work the other way, copying data out of noiseBufferL and noiseBufferR.
-//file_mem(0, noiseBufferL, SIZE+2); // temporarily disabled while debugging a heisenbug
+file_mem(0, noiseBufferL, SIZE+2); // temporarily disabled while debugging a heisenbug
