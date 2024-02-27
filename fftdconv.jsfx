@@ -1,0 +1,420 @@
+desc:Convolution Ratio Denoiser
+
+// loosely based off github.com/nbickford/REAPERDenoiser
+
+// This defines a combo box that allows the user to select "Denoise Input" or
+// "Record Noise Sample". The default value is 0 (Denoise Input). The maximum
+// value is 1 (Record Noise Sample), and it increases in steps of 1.
+slider1:0<0,1,1{Denoise Input, Record Noise Sample}>Noise Collection Mode
+
+// This defines a slider that can be varied between 0.0 and 10.0 in steps of
+// 0.001, with default value 1.0. (If slider2 is equal to 0.0, this plugin
+// shouldn't really do anything to the input audio.)
+slider2:1<0.0,10.0,0.001>Noise Scale
+
+// This defines a slider that specifies the max level (in dB)
+// of the noise that is recorded
+slider3:-120<-120,0,0.1>Noise detect min (dB)
+
+// This defines a slider that specifies the minimum level (in dB)
+// that a noise is recorded with (useful to filter out silence)
+slider4:0<-120,0,0.1>Noise detext max (dB)
+
+// This defines a slider to mix between no noise reduction or
+// any amount of noise reduction.
+slider5:100<0,100,0.5>Wet/dry mix (0 = all dry, 100 = all wet)
+
+// checkbox? to enable/disable difference monitoring
+slider6:0<0,1,1{Off, On}>Difference monitoring
+
+// Here we can label our input and output pins. This also tells REAPER how many
+// channels we can handle. In this case, the plugin is stereo (a monophonic
+// plugin would be simpler, but I almost always use this to denoise stereo
+// audio), so we define two input and output pins.
+in_pin:Noisy Audio 1
+in_pin:Noisy Audio 2
+out_pin:Denoised Audio 1
+out_pin:Denoised Audio 2
+
+
+import cookdsp.jsfx-inc
+
+@gfx 1080 300
+gfx_set(1, 0, 0);
+bi = 0;
+loop(min(1024, DSIZE),
+  gfx_set(1-0.4*(bi&1),0,0);
+  gfx_line(bi+28, 150, bi+28, 150-100*visBuf[bi]);
+  bi += 1;
+);
+
+@init
+// function to convert decibel measurement to decimal value
+function dBtoDec(value)
+(
+  2^(value/6);
+);
+// On initialization, initialize all of our variables.
+
+function memalloc_(sz) (
+    // compensate for cookdsp adding some extra space
+    // (avoids problems with memory layout when using
+    //    FFT/MDCT and trying to manually keep track of the layout)
+    __memory_next -= 8;
+    memalloc(sz);
+);
+
+// The FFT size will always be constant.
+SIZE = 512;
+DSIZE = 2*SIZE;
+invSIZE = 1/SIZE;
+invDSIZE = 0.5/SIZE;
+HALFSIZE = SIZE*0.5;
+
+convBufferL1 = memalloc_(DSIZE);
+convBufferR1 = memalloc_(DSIZE);
+
+convBufferL2 = memalloc_(DSIZE);
+convBufferR2 = memalloc_(DSIZE);
+
+fftOutL1 = memalloc_(DSIZE);
+fftOutR1 = memalloc_(DSIZE);
+
+fftOutL2 = memalloc_(DSIZE);
+fftOutR2 = memalloc_(DSIZE);
+
+visBuf = memalloc_(DSIZE);
+
+window_buf = memalloc_(SIZE);
+
+outBufL1 = memalloc_(SIZE+1);
+outBufR1 = memalloc_(SIZE+1);
+
+outBufL2 = memalloc_(SIZE+1);
+outBufR2 = memalloc_(SIZE+1);
+
+noiseBufferL = memalloc_(HALFSIZE+1);
+noiseBufferR = memalloc_(HALFSIZE+1);
+
+// fill window_buf with a hahn window
+i = 0;
+loop(SIZE,
+  window_buf[i] = 0.5 - 0.5*cos(2*$pi*i/DSIZE);
+  i += 1;
+);
+
+runningSumL1 = memalloc_(1);
+runningSumL2 = memalloc_(1);
+
+runningSumR1 = memalloc_(1);
+runningSumR2 = memalloc_(1);
+
+
+// freembuf is only needed if the memory ever gets assigned to, and then can be freed.
+
+
+@slider
+// A simple function to zero out the noise buffers when switching mode to "Record Noise Sample"
+// previousMode should default to 0 on first initialization, but setting it to 0 in @init will cause
+// this code to get run again, and the noise profile lost even when switching to "Denoise Input"
+slider1 > 0.5 ? (
+  previousMode < 0.5 ? (
+    memset(noiseBufferL, 0, SIZE+2);
+    previousMode = 1;
+  )
+) : previousMode = 0;
+noiseLow = dBtoDec(slider3);
+noiseHigh = dBtoDec(slider4);
+slider6 == 0 ?
+(
+  wetfrac = slider5/100;
+  dryfrac = (100-slider5)/100;
+) : (
+  dryfrac = 1;
+  wetfrac = - slider5/100;
+);
+kSquared = sqr(slider2);
+
+
+@sample
+
+// We'll write a function to denoise a single channel, and then we'll call this
+// for each of the channels.
+// In this case, we'll pass in the channel number, the four input and output
+// tiles, and the current sample.
+// We also need to specify which variables will be local to the function (i.e.
+// which variables have local instead of global scope).
+// Note that channels are zero-indexed (so the left channel is channel 0, and
+// the right channel is channel 1).
+// Functions can return values, but this one won't return anything.
+// Swapping tiles and resetting samplesCollected will be managed by the caller.
+function denoiseChannel(channel fftBuffer outBuf noiseBuffer runningSum convBuffer samplesCollected)
+(
+  // Read out input audio
+  sample = spl(channel); // You can also use spl0 or spl1.
+  runningSum[] += sample * sample;
+  
+  fftBuffer[samplesCollected*2] = sample*invSIZE;
+  fftBuffer[samplesCollected*2+1] = 0;
+  fftBuffer[samplesCollected*2+SIZE] = 0;
+  fftBuffer[samplesCollected*2+SIZE+1] = 0;
+  
+  bandIndex = 0;
+  loop(HALFSIZE,
+    outBuf[bandIndex] = outBuf[bandIndex+1] + convBuffer[2*bandIndex] * sample;
+    bandIndex += 1;
+  );
+  
+  wet = outBuf[0];
+
+  outVal = wet * wetfrac + sample * dryfrac;
+
+  // Reached end of a tile?
+  samplesCollected >= HALFSIZE-1 ? (
+    fft(fftBuffer, SIZE);
+    
+    // If slider1 is greater than 0.5 (i.e. the user selected "Record Noise
+    // Sample", we store the FFT mangitudes of each of these buffers, but only when the level is correct
+    runningSumVal = sqrt(runningSum[]*invSIZE);
+    runningSum[] = 0;
+    (slider1 > 0.5 && runningSumVal >= noiseLow
+      && runningSumVal <= noiseHigh) ? 
+    (
+      // for each band, compare the norm of the noise in this frame.
+      // If it is greater than what's already there for this band, then copy
+      // it into the noiseBuffer
+      // treat dc and ny bands seperately:
+      // band 0 (dc)
+      index = 0;
+      loop(HALFSIZE+1,
+        squareMagnitudeNew = sqr(fftBuffer[2*index]) + sqr(fftBuffer[2*index+1]);
+        squareMagnitudeOld = noiseBuffer[index];
+        noiseBuffer[index] = 0.25 * squareMagnitudeNew + 0.75 * squareMagnitudeOld;
+        index += 1;
+      );
+    );
+
+    // Apply Norbert Weiner's filtering algorithm,
+    //   X(f) = Y(f) * (|Y(f)|^2)/(|Y(f)|^2 + k^2 |N(f)|^2)
+    // sqr() computes the square of a number, and abs() computes the absolute
+    // value of a number. We also include a factor of 1/SIZE, to normalize the
+    // FFT (so that if we don't do any denoising, the input signal is equal to
+    // the output signal).
+
+    // clear ConvBuffer
+    memset(convBuffer, 0, DSIZE);
+    
+    ZZZ = convBuffer[1];
+
+    // Loop over each band, from bandIndex = 1 to HALFSIZE - 1.
+    // caluclate attenuationfactor and store in convBuffer as a real valued complex number.
+    bandIndex = 0;
+    loop(SIZE,
+      // Compute |Y(f)|^2 = real(Y(f))^2 + imaginary(Y(f))^2
+      yNorm = sqr(fftBuffer[bandIndex*2]) + sqr(fftBuffer[2*bandIndex + 1]);
+      // The same for the noise component:
+      nNorm = noiseBuffer[min(bandIndex, SIZE-bandIndex)];
+      
+      attenuationFactor = nNorm / (kSquared * yNorm + nNorm);
+      
+      ((yNorm + nNorm)*100000000 == 0) ? attenuationFactor = 1;
+
+      convBuffer[2*bandIndex] = attenuationFactor;
+      
+      bandIndex += 1;
+    );
+    
+    /*
+    bandIndex = 0;
+    loop(DSIZE,
+      visBuf[bandIndex] = convBuffer[bandIndex];
+      bandIndex += 1;
+    );
+    //*/
+    
+    // find min of convBuffer
+    minVal = 2;
+    bandIndex = 0;
+    loop(SIZE,
+      convBuffer[bandIndex] > 0 ? minVal = min(convBuffer[bandIndex], minVal);
+      bandIndex += 2;
+    );
+    
+    // go a bit past the min
+    minVal *= 0.0000001;
+    
+    // add a bias to all bands, to prevent taking log of 0,
+    // and take log
+    bandIndex = 0;
+    loop(SIZE,
+      // calculate log(|H(k)|^2)/4 == log(|H(k)|)/2
+      convBuffer[bandIndex] = log(convBuffer[bandIndex]+minVal)*invDSIZE;
+      bandIndex += 2;
+    );
+    
+    /*
+    bandIndex = 0;
+    loop(DSIZE,
+      visBuf[bandIndex] = convBuffer[bandIndex]*SIZE;
+      bandIndex += 1;
+    );
+    //*/
+
+    // convert to cepstrum
+    ifft(convBuffer, SIZE);
+
+    /*
+    bandIndex = 0;
+    loop(DSIZE,
+      visBuf[bandIndex] = convBuffer[bandIndex]*4;
+      bandIndex += 1;
+    );
+    //*/
+    
+    // leave DC alone
+    convBuffer[1] = 0;
+    bandIndex = 2;
+    loop(HALFSIZE-1,
+      convBuffer[bandIndex] *= 2 * window_buf[bandIndex];
+      convBuffer[bandIndex+1] = 0;
+      bandIndex += 2;
+    );
+
+    memset(convBuffer+SIZE, 0, SIZE);
+    
+      
+    /*
+    bandIndex = 0;
+    loop(DSIZE,
+      visBuf[bandIndex] = convBuffer[bandIndex]*4;
+      bandIndex += 1;
+    );
+    //*/
+    
+    //convBuffer[0] = convBuffer[1] = 0;
+    
+    // reverse cepstrum into fft realm
+    fft(convBuffer, SIZE);
+
+    /*
+    bandIndex = 0;
+    loop(DSIZE,
+      visBuf[bandIndex] = convBuffer[bandIndex]*0.25;
+      bandIndex += 1;
+    );
+    //*/
+
+    // apply complex exp to reverse log from before
+    bandIndex = 0;
+    loop(SIZE,
+      // e^(a+bj) = e*a(cos(b) + j*sin(b))
+      mult = exp(convBuffer[bandIndex])*invSIZE;
+      ph = convBuffer[bandIndex+1];
+      convBuffer[bandIndex+1] = mult * sin(ph);
+      convBuffer[bandIndex] = mult * cos(ph);
+      bandIndex += 2;
+    );
+
+    // clean convBuffer
+    ifft(convBuffer, SIZE);
+    
+    ZZZ = convBuffer[0];
+    
+    bandIndex = 0;
+    sum = 0;
+    loop(HALFSIZE,
+      0
+    );
+    
+    /*
+    bandIndex = 0;
+    loop(DSIZE,
+      visBuf[bandIndex] = convBuffer[bandIndex];
+      bandIndex += 1;
+    );
+    //*/
+    
+    // discard second half of the fir
+    //memset(convBuffer + SIZE, 0, HALFSIZE);
+    
+  
+    //bandIndex = 0;
+    //loop(SIZE,
+    //  convBuffer[bandIndex] *= window_buf[1];
+    //  bandIndex += 2;
+    //);
+    //convBuffer[0] = 1;
+    
+    
+    //*
+    bandIndex = 0;
+    loop(DSIZE,
+      visBuf[bandIndex] = convBuffer[bandIndex];
+      bandIndex += 1;
+    );
+    //*/
+  ); // samplesCollected >= HALFSIZE-1
+  outVal;
+); // function denoiseChannel(...
+
+tilePos0 = samplesCollected + HALFSIZE*0.5;
+tilePos1 = samplesCollected;
+
+tileFrac0 = window_buf[tilePos1*4];
+tileFrac1 = 1-tileFrac0;
+
+// Now, call denoiseChannel for each of the channels.
+L0 = denoiseChannel(0, fftOutL1, outBufL1, noiseBufferL, runningSumL1, convBufferL1, tilePos0);
+R0 = denoiseChannel(1, fftOutR1, outBufR1, noiseBufferR, runningSumR1, convBufferR1, tilePos0);
+L1 = denoiseChannel(0, fftOutL2, outBufL2, noiseBufferL, runningSumL2, convBufferL2, tilePos1);
+R1 = denoiseChannel(1, fftOutR2, outBufR2, noiseBufferR, runningSumR2, convBufferR2, tilePos1);
+// Go to the next sample
+samplesCollected += 1;
+samplesCollected >= HALFSIZE*0.5 ?
+(
+  temp = convBufferR1;
+  convBufferR1 = convBufferR2;
+  convBufferR2 = temp;
+  
+  temp = convBufferL1;
+  convBufferL1 = convBufferL2;
+  convBufferL2 = temp;
+  
+  temp = outBufR1;
+  outBufR1 = outBufR2;
+  outBufR2 = temp;
+  
+  temp = outBufL1;
+  outBufL1 = outBufL2;
+  outBufL2 = temp;
+  
+  temp = fftoutR1;
+  fftoutR1 = fftoutR2;
+  fftoutR2 = temp;
+  
+  temp = fftoutL1;
+  fftoutL1 = fftoutL2;
+  fftoutL2 = temp;
+  
+  temp = runningSumR1;
+  runningSumR1 = runningSumR2;
+  runningSumR2 = temp;
+  
+  temp = runningSumL1;
+  runningSumL1 = runningSumL2;
+  runningSumL2 = temp;
+  
+  samplesCollected = 0;
+);
+
+spl0 = L0 * tileFrac0 + L1 * tileFrac1;
+spl1 = R0 * tileFrac0 + R1 * tileFrac1;
+      
+
+@serialize
+// Sliders are serialized automatically, so all we have to serialize is the two
+// noise buffers. JSFX's serialization works in a clever way: when reading the
+// state of the plugin from a serialized version, these functions copy data into
+// noiseBufferL and noiseBufferR. But when writing out the state of the plugin,
+// they work the other way, copying data out of noiseBufferL and noiseBufferR.
+file_mem(0, noiseBufferL, SIZE+2);
