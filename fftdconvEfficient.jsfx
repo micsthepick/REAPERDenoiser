@@ -393,4 +393,4 @@ samplesCollected %= HALFSIZE;
 // state of the plugin from a serialized version, these functions copy data into
 // noiseBufferL and noiseBufferR. But when writing out the state of the plugin,
 // they work the other way, copying data out of noiseBufferL and noiseBufferR.
-file_mem(0, noiseBufferL, SIZE+2);
+//file_mem(0, noiseBufferL, SIZE+2); // temporarily disabled while debugging a heisenbug
