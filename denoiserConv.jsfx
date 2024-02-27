@@ -46,9 +46,10 @@ loop(min(513, SIZE/2+1),
   gfx_line(bi, 200*(1-tileBufL[bi]), bi, 199);
   bi += 1;
 );
+offset = bi+1;
 bi = 0;
-loop(min(513, SIZE/2+1),
-  gfx_line(bi+513, 100, bi+513, 100-100*visBuf[bi*2]);
+loop(min(512, SIZE),
+  gfx_line(bi+offset, 100, bi+offset, 100-100*visBuf[bi]);
   bi += 1;
 );
 
@@ -91,15 +92,13 @@ local(i, temp)
 );
 
 // The FFT size will always be constant.
-SIZE = 4096;
+SIZE = 2048;
 DSIZE = 2*SIZE;
 invSIZE = 1/SIZE;
 sqrtinvSIZE = sqrt(invSIZE);
 halfSIZE = SIZE*0.5;
 
 convBuffer = memalloc_(DSIZE);
-
-visBuf = memalloc_(SIZE);
 
 fftOutL = memalloc_(DSIZE);
 fftOutR = memalloc_(DSIZE);
@@ -113,6 +112,8 @@ outRbuf = memalloc_(SIZE);
 noiseBufferL = memalloc_(SIZE);
 noiseBufferR = memalloc_(SIZE);
 
+visBuf = memalloc_(SIZE);
+
 delBufL = memalloc_(halfSIZE);
 delBufR = memalloc_(halfSIZE);
 
@@ -121,7 +122,8 @@ window_buf = memalloc_(halfSIZE);
 // fill window_buf with a hahn window
 i = 0;
 loop(halfSIZE,
-  0.5 + 0.5*cos(2*$pi*i/(halfSIZE-1))
+  window_buf[i] = 0.5 + 0.5*cos(2*$pi*i/(halfSIZE-1));
+  i += 1;
 );
 
 runningSumL = memalloc_(1);
@@ -255,7 +257,7 @@ function denoiseChannel(channel tileBuf inDelBuf fftBuffer outBuf noiseBuffer ru
     bandIndex = 0;
     loop(SIZE,
       // calculate log(|H(k)|^2)/4 == log(|H(k)|)/2
-      convBuffer[bandIndex] = max(-1099511627776, log(abs(convBuffer[bandIndex]))*0.5)*invSIZE;
+      convBuffer[bandIndex] = max(-1099511627776, log(abs(convBuffer[bandIndex])))*invSIZE;
       convBuffer[bandIndex+1] = 0;
       bandIndex += 2;
     );
@@ -267,14 +269,11 @@ function denoiseChannel(channel tileBuf inDelBuf fftBuffer outBuf noiseBuffer ru
 
     // remove nyquist, and mult +f by -1
     // f by 2 and -f by 0
-    // bands 0 and 1 (indexes 0 1 2 3) represent
-    // frequencies 0 and ny respectively
-    //convBuffer[0] = 0;
-    convBuffer[2] = 0;
+    convBuffer[halfSIZE] = 0;
     // leave them alone
     bandIndex = 4;
     // layout of cepstrum: band 0, ny
-    // 
+    //
     loop(HALFSIZE-1,
       // just apply window to negative freq
       convBuffer[bandIndex] *= window_buf[bandIndex*0.25];
@@ -293,7 +292,7 @@ function denoiseChannel(channel tileBuf inDelBuf fftBuffer outBuf noiseBuffer ru
     bandIndex = 0;
     loop(SIZE,
       // e^(a+bj) = e*a(cos(b) + j*sin(b))
-      mult = exp(convBuffer[bandIndex])*sqrtinvSIZE;
+      mult = exp(convBuffer[bandIndex]);
       convBuffer[bandIndex+1] = -mult * sin(convBuffer[bandIndex+1]);
       convBuffer[bandIndex]   = mult * cos(convBuffer[bandIndex+1]);
       bandIndex += 2;
@@ -305,7 +304,11 @@ function denoiseChannel(channel tileBuf inDelBuf fftBuffer outBuf noiseBuffer ru
     // discard second half of the fir
     memset(convBuffer + SIZE, 0, SIZE);
     
-    memcpy(visBuf, convBuffer, SIZE);
+    bandIndex = 0;
+        loop(SIZE,
+          visBuf[bandIndex] = convBuffer[2*bandIndex];
+          bandIndex += 1;
+        );
 
     fft(convBuffer, SIZE);
     
