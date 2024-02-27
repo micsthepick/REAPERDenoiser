@@ -269,7 +269,7 @@ function denoiseChannel(channel tileBuf inDelBuf fftBuffer outBuf noiseBuffer ru
 
     // remove nyquist, and mult +f by -1
     // f by 2 and -f by 0
-    convBuffer[halfSIZE] = 0;
+    convBuffer[SIZE] = 0;
     // leave them alone
     bandIndex = 4;
     // layout of cepstrum: band 0, ny
