@@ -294,7 +294,7 @@ function denoiseChannel(channel tileBuf inDelBuf fftBuffer outBuf noiseBuffer ru
       // e^(a+bj) = e*a(cos(b) + j*sin(b))
       mult = exp(convBuffer[bandIndex]);
       convBuffer[bandIndex+1] = -mult * sin(convBuffer[bandIndex+1]);
-      convBuffer[bandIndex]   = mult * cos(convBuffer[bandIndex+1]);
+      convBuffer[bandIndex]   =  mult * cos(convBuffer[bandIndex+1]);
       bandIndex += 2;
     );
 
