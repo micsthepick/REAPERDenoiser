@@ -1,8 +1,16 @@
 
 // Helper functions to check for positive infinity, negative infinity, and nan
-function is_pos_inf(x) (x ==  1/0);
-function is_neg_inf(x) (x == -1/0);
-function is_nan(x) (x != x;);
+function is_pos_inf(x) (
+	(x * 2 == x) && x > 0;
+);
+function is_neg_inf(x) (
+	is_pos_inf(-x);
+);
+function is_nan(x) local(z1, z2) (
+	z2 = x;
+	z1 = x + 1;
+	z2 == 0 && z1 == 0;
+);
 
 function assert_equal_exact(expected, actual, message) global(failed_asserts, successful_asserts) (
 	is_nan(expected) && is_nan(actual) ? successful_asserts += 1 :
@@ -61,6 +69,35 @@ function test_summary() global(failed_asserts successful_asserts) local(total) (
 		)	
 	)
 );
+
+/*
+pif = 0;
+pif = 1/pif;
+nif = 0;
+nif = -1/nif;
+lg = 2^64;
+
+printf("z/z=%g, pif=%g, nif=%g\n", z/z, pif, nif);
+
+assert_true( is_pos_inf(pif),  " +1/0 is +inf");
+assert_false(is_neg_inf(pif),  " +1/0 is -inf");
+assert_false(    is_nan(pif),  " +1/0 is  nan");
+assert_false(is_pos_inf(nif),  " -1/0 is +inf");
+assert_true( is_neg_inf(nif),  " -1/0 is -inf");
+assert_false(    is_nan(nif),  " -1/0 is  nan");
+assert_false(is_pos_inf(z/z),  "  z/z is +inf");
+assert_false(is_neg_inf(z/z),  "  z/z is -inf");
+assert_true(     is_nan(z/z),  "  z/z is  nan");
+assert_false(is_pos_inf(  0),  "   0 is +inf");
+assert_false(is_neg_inf(  0),  "   0 is -inf");
+assert_false(    is_nan(  0),  "   0 is  nan");
+assert_false(is_pos_inf( lg), " 2^64 is +inf");
+assert_false(is_neg_inf( lg), " 2^64 is -inf");
+assert_false(    is_nan( lg), " 2^64 is  nan");
+assert_false(is_pos_inf(-lg), "-2^64 is +inf");
+assert_false(is_neg_inf(-lg), "-2^64 is -inf");
+assert_false(    is_nan(-lg), "-2^64 is  nan");
+*/
 
 // drop in for spl(channel)
 // function spl(channel) (

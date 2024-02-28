@@ -114,7 +114,7 @@ function store_noise_profile(buffer) global(SIZE, noiseBuffer) local(index, norm
 
 // calculate an attenuation given the yNorm, and nNorm, and kSquared to approximate sNorm
 function denoise(yNorm, nNorm, kSquared) (
-  yNorm / (yNorm + kSquared * nNorm);
+  yNorm > 0 ? yNorm / (yNorm + kSquared * nNorm);
 );
 
 // helpful functions to get/set the right sample given an index
@@ -305,6 +305,15 @@ function sum_first_pdc_samples(s0val, s1val) (
 		spl1sum += abs(spl1);
 	);
 );
+
+//DEBUGPRINT("TEST_denoise_0_yNorm\n");
+assert_equal_exact(0, denoise(0, 0, 0));
+
+//DEBUGPRINT("TEST_denoise_really_small_yNorm\n");
+assert_equal_exact(1, denoise(2^-140, 0, 0));
+
+//DEBUGPRINT("TEST_denoise_really_small_yNorm_and_nNorm\n");
+assert_equal_exact(0.5, denoise(2^-140, 2^-140, 1));
 
 //DEBUGPRINT("SAMPLE_1_1_STRESS_TEST\n");
 // spl0=1 spl1=1 for many samples
