@@ -1,0 +1,22 @@
+name: test JSFX
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: ilammy/setup-nasm@v1
+    - uses: actions/checkout@v4
+      name: Check out repository code
+      with:
+        # Fetches all submodules recursively
+        submodules: 'recursive'
+
+    - name: Compile EEL2 with NO_GFX
+      run: |
+        ./compile_wdl.sh
+
+    - name: Run Tests
+      run: |
+        ./test_eel.sh

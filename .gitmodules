@@ -1,0 +1,4 @@
+[submodule "WDL"]
+	path = WDL
+	url = https://github.com/justinfrankel/WDL.git
+	ignore = all

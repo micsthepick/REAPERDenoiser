@@ -29,6 +29,11 @@ out_pin:Denoised Audio 2
 
 
 @init
+///*IFTEST{* // init sliders
+slider1=0;
+slider2=1;
+//*}IFTEST*/ // main test block
+
 // On initialization, initialize all of our variables.
 
 // The FFT size will always be constant.
@@ -243,8 +248,9 @@ samplesCollected == SIZE/2 ? (
   temp = bufferO1R;
   bufferO1R = bufferO2R;
   bufferO2R = temp;
-)
+);
 
+/*IFNTEST{*/ // hide serialize
 @serialize
 // Sliders are serialized automatically, so all we have to serialize is the two
 // noise buffers. JSFX's serialization works in a clever way: when reading the
@@ -253,3 +259,9 @@ samplesCollected == SIZE/2 ? (
 // they work the other way, copying data out of noiseBufferL and noiseBufferR.
 file_mem(0, noiseBufferL, SIZE);
 file_mem(0, noiseBufferR, SIZE);
+/*}IFNTSET*/ // hide serialize
+
+///*IFTEST{* // main test block
+
+test_summary();
+//*}IFTEST*/ // main test block
