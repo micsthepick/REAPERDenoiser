@@ -63,22 +63,23 @@ function test_summary() global(failed_asserts successful_asserts) local(total) (
 );
 
 // drop in for spl(channel)
-function spl(channel) (
-	0 == channel ? spl0 :
-	1 == channel ? spl1 :
-	2 == channel ? spl2 :
-	3 == channel ? spl3 :
-	4 == channel ? spl4 :
-	5 == channel ? spl5 :
-	6 == channel ? spl6 :
-	7 == channel ? spl7 :
-	8 == channel ? spl8 :
-	9 == channel ? spl9 :
-	10 == channel ? spl10 :
-	11 == channel ? spl11 :
-	12 == channel ? spl12 :
-	13 == channel ? spl13 :
-	14 == channel ? spl14 :
-	15 == channel ? spl15 :
-	0;
-);
+// function spl(channel) (
+// 	0 == channel ? spl0 :
+// 	1 == channel ? spl1 :
+// 	2 == channel ? spl2 :
+// 	3 == channel ? spl3 :
+// 	4 == channel ? spl4 :
+// 	5 == channel ? spl5 :
+// 	6 == channel ? spl6 :
+// 	7 == channel ? spl7 :
+// 	8 == channel ? spl8 :
+// 	9 == channel ? spl9 :
+// 	10 == channel ? spl10 :
+// 	11 == channel ? spl11 :
+// 	12 == channel ? spl12 :
+// 	13 == channel ? spl13 :
+// 	14 == channel ? spl14 :
+// 	15 == channel ? spl15 :
+// 	0;
+// );
+// does not work for writes!

@@ -76,6 +76,9 @@ pdc_delay = SIZE;
 pdc_bot_ch=0;
 pdc_top_ch=2;
 
+// tell the plugin not to output for the first two frames, as the buffers are still catching up
+muted = 2;
+
 
 @slider
 // A simple function to zero out the noise buffers when switching mode to "Record Noise Sample"
@@ -92,6 +95,38 @@ slider1 > 0.5 ? (
 
 
 @sample
+// This is a function to store a noise profile from the fftBuffer (only argument)
+// into the noiseBuffer (also global scope)
+function store_noise_profile(buffer) global(SIZE, noiseBuffer) local(index, normSquareNew, normSquareOld) (
+  // for each band, compare the norm of the noise in this frame.
+  // If it is greater than what's already there for this band, then copy
+  // it into the noiseBuffer
+  index = 0;
+  loop(SIZE,
+    normSquareNew = sqr(buffer[2 * index + 0]) + sqr(buffer[2 * index + 1]);
+    normSquareOld = noiseBuffer[index];
+    normSquareNew >= normSquareOld ? (
+      noiseBuffer[index] = normSquareNew;
+    );
+    index += 1;
+  );
+);
+
+// calculate an attenuation given the yNorm, and nNorm, and kSquared to approximate sNorm
+function denoise(yNorm, nNorm, kSquared) (
+  yNorm / (yNorm + kSquared * nNorm);
+);
+
+// helpful functions to get/set the right sample given an index
+// ( used here because the EEL2 base language has no way of interpreting `spl(channel)` )
+// assumes 2 channels!
+function getspl(channel) (
+  channel == 0 ? spl0 : spl1
+);
+function setspl(channel, value) (
+  (channel == 0 ? spl0 : spl1) = value
+);
+
 // We'll write a function to denoise a single channel, and then we'll call this
 // for each of the channels.
 // In this case, we'll pass in the channel number, the four input and output
@@ -99,15 +134,15 @@ slider1 > 0.5 ? (
 // We also need to specify which variables will be local to the function (i.e.
 // which variables have local instead of global scope).
 // Note that channels are zero-indexed (so the left channel is channel 0, and
-// the right channel is channel 1).
+// the right channel is channel 1).d
 // Functions can return values, but this one won't return anything.
 // Swapping tiles and resetting samplesCollected will be managed by the caller.
-function denoiseChannel(channel tileI1 tileI2 tileO1 tileO2 noiseBuffer samplesCollected)
+function denoise_channel(channel tileI1 tileI2 tileO1 tileO2 noiseBuffer samplesCollected)
 local(sample tilePos1 tilePos2 hannWindowTile1 hannWindowTile2 index bandIndex
   kSquared yNorm nNorm attenuationFactor)
 (
   // Read out input audio and write it into the input buffer.
-  sample = spl(channel); // You can also use spl0 or spl1.
+  sample = getspl(channel); // You could also use spl(channel) or spl0 and spl1 individually
   
   // Compute our positions in tile 1 and tile 2 for conciseness
   tilePos1 = samplesCollected + SIZE/2;
@@ -124,7 +159,10 @@ local(sample tilePos1 tilePos2 hannWindowTile1 hannWindowTile2 index bandIndex
   tileI2[tilePos2] = sample * hannWindowTile2;
   
   // For the output audio, read from the two tiles and sum their results.
-  spl(channel) = tileO1[tilePos1] + tileO2[tilePos2];
+  muted > 0 ? setspl(channel, 0) : (
+    setspl(channel, tileO1[tilePos1] + tileO2[tilePos2]);
+    channel == 0 ? muted -= 1;
+  );
   
   // When we finish a tile, samplesCollected is equal to (SIZE/2) - 1
   // When that happens, we transform the contents of tile 1 and write them to
@@ -173,18 +211,7 @@ local(sample tilePos1 tilePos2 hannWindowTile1 hannWindowTile2 index bandIndex
     // If slider1 is greater than 0.5 (i.e. the user selected "Record Noise
     // Sample", we store the FFTs of each of these buffers.
     slider1 > 0.5? (
-      // for each band, compare the norm of the noise in this frame.
-      // If it is greater than what's already there for this band, then copy
-      // it into the noiseBuffer
-      index = 0;
-      loop(SIZE,
-        normSquareNew = sqr(fftBuffer[2 * index + 0]) + sqr(fftBuffer[2 * index + 1]);
-        normSquareOld = noiseBuffer[index];
-        normSquareNew >= normSquareOld ? (
-          noiseBuffer[index] = normSquareNew;
-        );
-        index += 1;
-      );
+      store_noise_profile(fftBuffer);
     );
     
     // Apply Norbert Weiner's filtering algorithm,
@@ -203,7 +230,7 @@ local(sample tilePos1 tilePos2 hannWindowTile1 hannWindowTile2 index bandIndex
       // The same for the noise component:
       nNorm = noiseBuffer[bandIndex];
       
-      attenuationFactor = yNorm / (SIZE * (yNorm + kSquared * nNorm));
+      attenuationFactor = denoise(yNorm, nNorm, kSquared);
       
       fftBuffer[2 * bandIndex + 0] *= attenuationFactor;
       fftBuffer[2 * bandIndex + 1] *= attenuationFactor;
@@ -218,15 +245,17 @@ local(sample tilePos1 tilePos2 hannWindowTile1 hannWindowTile2 index bandIndex
     // Copy from the complex numbers in fftBuffer to the output tile:
     index = 0;
     loop(SIZE,
-      tileO1[index] = fftBuffer[2 * index + 0];
+      tileO1[index] = fftBuffer[2 * index + 0] / SIZE; // rescale due to FFT
       index += 1;
     );
   )
 );
 
-// Now, call denoiseChannel for each of the channels.
-denoiseChannel(0, bufferI1L, bufferI2L, bufferO1L, bufferO2L, noiseBufferL, samplesCollected);
-denoiseChannel(1, bufferI1R, bufferI2R, bufferO1R, bufferO2R, noiseBufferR, samplesCollected);
+
+//IFTEST function sample_code() (
+// Now, call denoise_channel for each of the channels.
+denoise_channel(0, bufferI1L, bufferI2L, bufferO1L, bufferO2L, noiseBufferL, samplesCollected);
+denoise_channel(1, bufferI1R, bufferI2R, bufferO1R, bufferO2R, noiseBufferR, samplesCollected);
 // Go to the next sample
 samplesCollected += 1;
 samplesCollected == SIZE/2 ? (
@@ -249,6 +278,7 @@ samplesCollected == SIZE/2 ? (
   bufferO1R = bufferO2R;
   bufferO2R = temp;
 );
+//IFTEST ); // function sample_code() (
 
 /*IFNTEST{*/ // hide serialize
 @serialize
@@ -261,7 +291,37 @@ file_mem(0, noiseBufferL, SIZE);
 file_mem(0, noiseBufferR, SIZE);
 /*}IFNTSET*/ // hide serialize
 
-///*IFTEST{* // main test block
+/*IFTEST{* // main test block
+
+// helpers
+function sum_first_pdc_samples(s0val, s1val) (
+	spl0sum = 0;
+	spl1sum = 0;
+	loop(pdc_delay,
+		spl0=s0val;
+		spl1=s1val;
+		sample_code();
+		spl0sum += abs(spl0);
+		spl1sum += abs(spl1);
+	);
+);
+
+//DEBUGPRINT("SAMPLE_1_1_STRESS_TEST\n");
+// spl0=1 spl1=1 for many samples
+sum_first_pdc_samples(1, 1);
+assert_equal_exact(0, spl0sum, "SAMPLE_1_1_STRESS_TEST failed on initial spl0");
+assert_equal_exact(0, spl1sum, "SAMPLE_1_1_STRESS_TEST failed on initail spl1");
+drift_from_1_spl0 = 0;
+drift_from_1_spl1 = 0;
+loop(0,//SIZE*64,
+  spl0=1;
+	spl1=1;
+  sample_code();
+  drift_from_1_spl0 += abs(1-spl0);
+  drift_from_1_spl1 += abs(1-spl1);
+);
+assert_near_equal(0, 2^-14, drift_from_1_spl0, "SAMPLE_1_1_STRESS_TEST drifted from 1 on spl0");
+assert_near_equal(0, 2^-14, drift_from_1_spl1, "SAMPLE_1_1_STRESS_TEST drifted from 1 on spl1");
 
 test_summary();
 //*}IFTEST*/ // main test block
