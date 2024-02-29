@@ -1,0 +1,122 @@
+
+// Helper functions to check for positive infinity, negative infinity, and nan
+function is_pos_inf(x) (
+	(x * 2 == x) && x > 0;
+);
+function is_neg_inf(x) (
+	is_pos_inf(-x);
+);
+function is_nan(x) local(z1, z2) (
+	z2 = x;
+	z1 = x + 1;
+	z2 == 0 && z1 == 0;
+);
+
+function assert_equal_exact(expected, actual, message) global(failed_asserts, successful_asserts) (
+	is_nan(expected) && is_nan(actual) ? successful_asserts += 1 :
+	(is_pos_inf(expected) && is_pos_inf(actual)) || (is_neg_inf(expected) && is_neg_inf(actual)) ? successful_asserts += 1 :
+	expected !== actual ? (
+		fprintf(3, "\033[0;31mexpected: %g, was: %g. %s\033[0m\n", expected, actual, message);
+		failed_asserts += 1;
+	) : successful_asserts += 1;
+);
+
+function assert_equal_exact(expected, actual) global() (
+	assert_equal_exact(expected, actual, "values differ!")
+);
+
+function assert_near_equal(expected, tolerance, actual, message) global(failed_asserts, successful_asserts) (
+	is_nan(expected) || is_nan(actual) || is_nan(tolerance) ? successful_asserts += 1 :
+	(is_pos_inf(expected) || is_neg_inf(expected)) && (is_pos_inf(actual) || is_neg_inf(actual)) ? successful_asserts += 1 :
+	abs(expected - actual) > tolerance ? (
+		fprintf(3, "\033[0;31mexpected: %g (±%g), was: %g. %s\033[0m\n", expected, tolerance, actual, message);
+		failed_asserts += 1;
+	) : successful_asserts += 1;
+);
+
+function assert_near_equal(expected, tolerance, actual) global() (
+	assert_near_equal(expected, tolerance, actual, "values are not equal within tolerance!")
+);
+
+function assert_true(boolean, message) global(failed_asserts, successful_asserts) (
+	(!boolean) ? (
+		fprintf(3, "\033[0;31mexpected: true, was: false. %s\033[0m\n", message);
+		failed_asserts += 1;
+	) : successful_asserts += 1;
+);
+
+function assert_false(boolean, message) global(failed_asserts, successful_asserts) (
+	boolean ? (
+		fprintf(3, "\033[0;31mexpected: false, was: true. %s\033[0m\n", message);
+		failed_asserts += 1;
+	) : successful_asserts += 1;
+);
+
+function assert_true(boolean) global() (
+	assert_true(boolean, "");
+);
+
+function assert_false(boolean) global() (
+	assert_false(boolean, "");
+);
+
+function test_summary() global(failed_asserts successful_asserts) local(total) (
+	total = failed_asserts + successful_asserts;
+	failed_asserts === 0 ? fprintf(3, "\033[0;32mAll %d asserts succeeded.\033[0m\n", total) : (
+		successful_asserts > 0 ? printf("\033[0;34m%d of %d asserts succeeded.\033[0m\n", successful_asserts, total);
+		failed_asserts > 0 ? (
+			printf("\033[0;31m%d of %d asserts failed.\nFAILURE, see above!\033[0m\n", failed_asserts, total);
+		)	
+	)
+);
+
+/*
+pif = 0;
+pif = 1/pif;
+nif = 0;
+nif = -1/nif;
+lg = 2^64;
+
+printf("z/z=%g, pif=%g, nif=%g\n", z/z, pif, nif);
+
+assert_true( is_pos_inf(pif),  " +1/0 is +inf");
+assert_false(is_neg_inf(pif),  " +1/0 is -inf");
+assert_false(    is_nan(pif),  " +1/0 is  nan");
+assert_false(is_pos_inf(nif),  " -1/0 is +inf");
+assert_true( is_neg_inf(nif),  " -1/0 is -inf");
+assert_false(    is_nan(nif),  " -1/0 is  nan");
+assert_false(is_pos_inf(z/z),  "  z/z is +inf");
+assert_false(is_neg_inf(z/z),  "  z/z is -inf");
+assert_true(     is_nan(z/z),  "  z/z is  nan");
+assert_false(is_pos_inf(  0),  "   0 is +inf");
+assert_false(is_neg_inf(  0),  "   0 is -inf");
+assert_false(    is_nan(  0),  "   0 is  nan");
+assert_false(is_pos_inf( lg), " 2^64 is +inf");
+assert_false(is_neg_inf( lg), " 2^64 is -inf");
+assert_false(    is_nan( lg), " 2^64 is  nan");
+assert_false(is_pos_inf(-lg), "-2^64 is +inf");
+assert_false(is_neg_inf(-lg), "-2^64 is -inf");
+assert_false(    is_nan(-lg), "-2^64 is  nan");
+*/
+
+// drop in for spl(channel)
+// function spl(channel) (
+// 	0 == channel ? spl0 :
+// 	1 == channel ? spl1 :
+// 	2 == channel ? spl2 :
+// 	3 == channel ? spl3 :
+// 	4 == channel ? spl4 :
+// 	5 == channel ? spl5 :
+// 	6 == channel ? spl6 :
+// 	7 == channel ? spl7 :
+// 	8 == channel ? spl8 :
+// 	9 == channel ? spl9 :
+// 	10 == channel ? spl10 :
+// 	11 == channel ? spl11 :
+// 	12 == channel ? spl12 :
+// 	13 == channel ? spl13 :
+// 	14 == channel ? spl14 :
+// 	15 == channel ? spl15 :
+// 	0;
+// );
+// does not work for writes!
